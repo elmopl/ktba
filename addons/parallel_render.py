@@ -1,3 +1,10 @@
+"""
+Small addon for blender to help with rendering in VSE.
+It automates rendering with multiple instances of blender.
+
+Copyright (c) 2017 Krzysztof Trzcinski
+"""
+
 from bpy import types
 from bpy.props import EnumProperty
 from bpy.props import IntProperty
