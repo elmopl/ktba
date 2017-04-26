@@ -11,6 +11,7 @@ from bpy.props import IntProperty
 from bpy.props import PointerProperty
 from multiprocessing import cpu_count
 from multiprocessing.dummy import Pool
+from threading import Thread
 from queue import Queue
 import bpy
 import subprocess
@@ -31,9 +32,8 @@ class ParallelRender(types.Operator):
     batch_type = EnumProperty(
         items = [
             # (identifier, name, description, icon, number)
-            ('fixed', 'Fixed', 'Render in fixed size batches'), 
             ('parts', 'No. parts', 'Render in given number of batches (automatically splits it)'),
-            ('auto', 'Auto', 'Render in automatically calculated sized batches.')
+            ('fixed', 'Fixed', 'Render in fixed size batches'), 
         ],
         name = "Render Batch Size"
     )
@@ -48,7 +48,7 @@ class ParallelRender(types.Operator):
     parts = IntProperty(
         name = "Number of batches",
         min = 1,
-        default = cpu_count() - 1,
+        default = cpu_count() * 2,
         max = 10000
     )
 
@@ -59,6 +59,9 @@ class ParallelRender(types.Operator):
         max = 10000
     )
 
+    still_running = False
+    thread = None 
+    state = None
 
     def draw(self, context):
         layout = self.layout
@@ -97,14 +100,12 @@ class ParallelRender(types.Operator):
         while start <= end:
             yield (start, min(start + increment, end))
             start += increment + 1
-        
-    def execute(self, context):
-        scn = context.scene
 
+    def _run(self, scn):
         make_ranges = getattr(self, '_get_ranges_{0}'.format(str(self.batch_type)))
         ranges = tuple(make_ranges(scn))
 
-        cmds = (
+        cmds = tuple(
             (
                 (start, end),
                 (
@@ -121,22 +122,75 @@ class ParallelRender(types.Operator):
             for start, end in ranges
         )
 
-        with Pool(int(self.max_parallel)) as pool:
-            wm = context.window_manager
-            wm.progress_begin(0, len(ranges))
+        self.state = {'total': len(cmds), 'done': 0}
 
-            run = lambda args: (args[0], args[1], subprocess.call(args[1]))
+        def run(args):
+            rng, cmd = args
+            if self.keep_running:
+                res = subprocess.call(cmd)
+            else:
+                res = None
+
+            return rng, cmd, res
+
+        self.keep_running = True
+        self.report({'INFO'}, 'Starting 0/{0} [0.0%]'.format(
+            len(cmds)
+        ))
+        with Pool(int(self.max_parallel)) as pool:
             pending = pool.imap_unordered(run, cmds)
             results = {}
-            for num, (rng, cmd, res) in enumerate(pending):
-                print(cmd, res)
+            for num, (rng, cmd, res) in enumerate(pending, 1):
+                self.state['done'] = num
                 results[rng] = res
-                wm.progress_update(num)
-            wm.progress_end()
+                self._report_progress()
+       
+            for res in results.items():
+                print(res)
+
+    def _report_progress(self):
+        action = 'Done' if self.keep_running else 'Cancelling'
+        rep_type = 'INFO' if self.keep_running else 'WARNING'
+        self.report({rep_type}, '{0} {1}/{2} [{3:.1f}%]'.format(
+            action,
+            self.state['done'],
+            self.state['total'],
+            100.0 * self.state['done'] / self.state['total']
+        ))
         
-            print(results)
-        #subprocess.check_call(cmd)
-        return {'FINISHED'}
+    def execute(self, context):
+        scn = context.scene
+        wm = context.window_manager
+        self.timer = wm.event_timer_add(0.5, context.window)
+        wm.modal_handler_add(self)
+        wm.progress_begin(0., 100.)
+        self.thread = Thread(target=self._run, args=(scn,))
+        self.thread.start()
+        return{'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        wm = context.window_manager
+
+        # Stop the thread when ESCAPE is pressed.
+        if event.type == 'ESC':
+            self.keep_running = False
+            self._report_progress()
+
+        if event.type == 'TIMER':
+            still_running = self.thread.is_alive() 
+            percent = 100.0 * self.state['done'] / self.state['total']
+
+            if still_running:
+                wm.progress_update(percent)
+                self._report_progress()
+                return {'PASS_THROUGH'}
+
+            self.thread.join()
+            wm.event_timer_remove(self.timer)
+            wm.progress_end()
+            return {'FINISHED'}
+
+        return {'PASS_THROUGH'}
 
     def invoke(self, context, event):
         wm = context.window_manager
