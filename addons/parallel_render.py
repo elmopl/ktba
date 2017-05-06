@@ -6,9 +6,7 @@ Copyright (c) 2017 Krzysztof Trzcinski
 """
 
 from bpy import types
-from bpy.props import EnumProperty
-from bpy.props import IntProperty
-from bpy.props import PointerProperty
+from bpy import props
 from collections import namedtuple
 from multiprocessing import cpu_count
 from multiprocessing.dummy import Pool
@@ -78,18 +76,19 @@ class WorkerProcess(object):
         sck.connect(tuple(config['controller']))
         return MessageChannel(sck), config['args']
 
-    def __init__(self, args):
+    def __init__(self, args, project_file):
         self._args = args
         self._sck = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sck.bind(('localhost', 0))
         self._sck.listen(1)
         self._p = None
         self._incoming = None
+        self._project_file = project_file or bpy.data.filepath
 
     def __enter__(self):
         cmd = (
             bpy.app.binary_path,
-            bpy.data.filepath,
+            self._project_file,
             '--background',
             '--python',
             __file__,
@@ -102,11 +101,16 @@ class WorkerProcess(object):
             'args': self._args
         }
 
-        #json.dump(config, self._p.stdin)
         self._p.stdin.write(json.dumps(config).encode('utf8'))
         self._p.stdin.close()
 
+        # This is rather arbitrary.
+        # It is meant to protect accept() from hanging in case
+        # something very wrong happens to launched process.
+        self._sck.settimeout(5)
+
         conn, _addr = self._sck.accept()
+
         return MessageChannel(conn)
 
     def __exit__(self, exc_t, exc_v, tb):
@@ -121,7 +125,7 @@ class ParallelRender(types.Operator):
     bl_label = "Parallel Render"
     bl_options = {'REGISTER'}
 
-    batch_type = EnumProperty(
+    batch_type = props.EnumProperty(
         items = [
             # (identifier, name, description, icon, number)
             ('parts', 'No. parts', 'Render in given number of batches (automatically splits it)'),
@@ -130,21 +134,26 @@ class ParallelRender(types.Operator):
         name = "Render Batch Size"
     )
 
-    fixed = IntProperty(
+    overwrite = props.BoolProperty(
+        name = "Overwrite existing files",
+        default = True,
+    )
+
+    fixed = props.IntProperty(
         name = "Number of frames per batch",
         min = 1,
         default = 300,
         max = 10000
     )
 
-    parts = IntProperty(
+    parts = props.IntProperty(
         name = "Number of batches",
         min = 1,
         default = cpu_count() * 2,
         max = 10000
     )
 
-    max_parallel = IntProperty(
+    max_parallel = props.IntProperty(
         name = "Maximum number of instances",
         min = 1,
         default = cpu_count() // 2,
@@ -157,11 +166,10 @@ class ParallelRender(types.Operator):
 
     def draw(self, context):
         layout = self.layout
-        if bpy.data.is_dirty:
-            layout.label("You have unsaved changes.", text_ctxt="Render will be done with last saved version", icon='ERROR')
 
         layout.prop(self, "max_parallel")
 
+        layout.prop(self, "overwrite")
         layout.prop(self, "batch_type", expand=True)
         sub_prop = str(self.batch_type)
         if hasattr(self, sub_prop):
@@ -171,19 +179,20 @@ class ParallelRender(types.Operator):
         return True
 
     def _get_ranges_parts(self, scn):
-        start = scn.frame_start - 1
-        end = scn.frame_end
-        length = end - start 
+        offset = scn.frame_start
+        current = 0
+        end = scn.frame_end - offset
+        length = end + 1
         parts = int(self.parts)
 
         if length <= parts:
-            yield (start + 1, end)
+            yield (scn.frame_start, scn.frame_end)
             return
 
         for i in range(1, parts + 1):
             end = i * length // parts
-            yield (start + 1, end)
-            start = end
+            yield (offset + current, offset + end - 1)
+            current = end
 
     def _get_ranges_fixed(self, scn):
         start = scn.frame_start
@@ -204,6 +213,7 @@ class ParallelRender(types.Operator):
                     '--scene': str(scn.name),
                     '--start-frame': start,
                     '--end-frame': end,
+                    '--overwrite': bool(self.overwrite),
                 }
             )
             for start, end in ranges
@@ -219,13 +229,18 @@ class ParallelRender(types.Operator):
 
         RunResult = namedtuple('RunResult', ('range', 'command', 'rc'))
 
+        project_file = tempfile.NamedTemporaryFile(suffix='.blend', delete=False).name
+        self.report({'INFO'}, 'Saving temporary file {0}'.format(project_file))
+        bpy.ops.wm.save_as_mainfile(filepath=project_file, copy=True)
+        assert os.path.exists(project_file)
+
         def run(args):
             rng, cmd = args
             res = None
 
             if self.state == 'Running':
                 try:
-                    worker = WorkerProcess(cmd)
+                    worker = WorkerProcess(cmd, project_file=project_file)
                     with worker as channel:
                         msgs = iter(channel.recv, None)
                         last_done = rng[0]
@@ -262,6 +277,8 @@ class ParallelRender(types.Operator):
             self._report_progress()
             for rng, res in results.items():
                 print(rng, res.rc)
+
+        os.unlink(project_file)
 
     def _report_progress(self):
         rep_type, action = {
@@ -317,8 +334,20 @@ class ParallelRender(types.Operator):
 
     def invoke(self, context, event):
         wm = context.window_manager
+        if not bpy.context.scene.render.is_movie_format:
+            popup = wm.popup_menu(
+                lambda op, context: (
+                    op.layout.label("This feature is not supported."),
+                    op.layout.label("Render output format has to be a movie type."),
+
+                ),
+                title='Image output is not supported',
+                icon='CANCEL',
+            )
+            return {'FINISHED'}
+
         return wm.invoke_props_dialog(self)
-    
+
 def render_panel(self, context):
     scn = context.scene
     self.layout.prop(types.RenderSettings, 'parallel_render') 
@@ -336,6 +365,8 @@ def parse_args(args):
 
 
 def render():
+    assert bpy.context.scene.render.is_movie_format
+
     channel, args = WorkerProcess.read_config()
     with channel:
         def send_stats(what):
@@ -349,8 +380,12 @@ def render():
             scn.frame_start = args['--start-frame']
             scn.frame_end = args['--end-frame']
 
-            bpy.app.handlers.render_stats.append(send_stats)
-            bpy.ops.render.render(animation=True, scene = scn_name)
+            outfile = bpy.context.scene.render.frame_path()
+            if args['--overwrite'] or not os.path.exists(outfile):
+                bpy.app.handlers.render_stats.append(send_stats)
+                bpy.ops.render.render(animation=True, scene = scn_name)
+            else:
+                print('{0} alread exists.'.format(outfile))
 
             channel.send({
                 'current_frame': scn.frame_end,
