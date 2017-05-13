@@ -2,6 +2,8 @@
 Small addon for blender to help with rendering in VSE.
 It automates rendering with multiple instances of blender.
 
+It should come up as "VSE Parallel Render" in addons list.
+
 Copyright (c) 2017 Krzysztof Trzcinski
 """
 
@@ -348,21 +350,11 @@ class ParallelRender(types.Operator):
 
         return wm.invoke_props_dialog(self)
 
-def render_panel(self, context):
-    scn = context.scene
-    self.layout.prop(types.RenderSettings, 'parallel_render') 
-
 def register():
     bpy.utils.register_module(__name__)
 
 def unregister():
     bpy.utils.unregister_module(__name__)
-    types.RENDER_PT_render.remove(render_panel)
-
-def parse_args(args):
-    argv = iter(sys.argv[start_pos+1:])
-    argv = dict(zip(argv, argv))
-
 
 def render():
     assert bpy.context.scene.render.is_movie_format
