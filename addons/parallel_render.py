@@ -34,6 +34,16 @@ bl_info = {
     "category": "VSE"
 }
 
+def cleanup_autosave_files(project_file):
+    # TODO: Work out proper way to clean up .blend{n} files
+    try:
+        n = 1
+        while True:
+            os.unlink(project_file + str(n))
+            n += 1
+    except OSError:
+        pass
+
 class MessageChannel(object):
     MSG_SIZE_FMT = '!i'
     MSG_SIZE_SIZE = struct.calcsize(MSG_SIZE_FMT)
@@ -231,7 +241,16 @@ class ParallelRender(types.Operator):
 
         RunResult = namedtuple('RunResult', ('range', 'command', 'rc'))
 
-        project_file = tempfile.NamedTemporaryFile(suffix='.blend', delete=False).name
+        project_file = tempfile.NamedTemporaryFile(
+            delete=False,
+            # Temporary project files has to be in the
+            # same directory to ensure relative paths work.
+            dir=bpy.path.abspath("//"),
+            prefix=os.path.splitext(os.path.basename(bpy.data.filepath))[0] + '_',
+            suffix='.blend',
+        )
+
+        project_file = project_file.name
         self.report({'INFO'}, 'Saving temporary file {0}'.format(project_file))
         bpy.ops.wm.save_as_mainfile(filepath=project_file, copy=True)
         assert os.path.exists(project_file)
@@ -254,6 +273,9 @@ class ParallelRender(types.Operator):
 
                         with self.summary_mutex:
                             self.summary['frames_done'] += 1
+                    status_msg = 'Worker finished writing {}'.format(msg['output_file'])
+                    LOGGER.info(status_msg)
+                    print(status_msg)
                     res = worker.wait()
                 except Exception as exc:
                     LOGGER.exception(exc)
@@ -277,8 +299,6 @@ class ParallelRender(types.Operator):
                     self.state = 'Failed'
                 
             self._report_progress()
-            for rng, res in results.items():
-                print(rng, res.rc)
 
         os.unlink(project_file)
 
@@ -373,6 +393,7 @@ def render():
             scn.frame_end = args['--end-frame']
 
             outfile = bpy.context.scene.render.frame_path()
+            LOGGER.info("Writing file {}".format(outfile))
             if args['--overwrite'] or not os.path.exists(outfile):
                 bpy.app.handlers.render_stats.append(send_stats)
                 bpy.ops.render.render(animation=True, scene = scn_name)
@@ -381,7 +402,9 @@ def render():
 
             channel.send({
                 'current_frame': scn.frame_end,
+                'output_file': outfile,
             })
+            LOGGER.info("Done writing {}".format(outfile))
         finally:
             channel.send(None)
     sys.exit(0)
