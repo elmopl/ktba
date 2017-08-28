@@ -176,7 +176,29 @@ class ParallelRender(types.Operator):
     thread = None 
     state = None
 
+    def _load_property_values(self, scene):
+        props = scene.get('parallel_render_props', {})
+
+        for name, value in props.items():
+            try:
+                setattr(self, name, value)
+            except Exception as exc:
+                print('Ignoring {} = {}: {}'.format(name, value, exc))
+
+    def _store_property_values(self, scene):
+        props = {
+            'parts': self.parts,
+            'max_parallel': self.max_parallel,
+            'fixed': self.fixed,
+            'overwrite': self.overwrite,
+            'batch_type': self.batch_type,
+        }
+
+        scene['parallel_render_props'] = props
+
     def draw(self, context):
+        self._load_property_values(context.scene)
+
         layout = self.layout
 
         layout.prop(self, "max_parallel")
@@ -188,6 +210,7 @@ class ParallelRender(types.Operator):
             layout.prop(self, sub_prop)
 
     def check(self, context):
+        self._store_property_values(context.scene)
         return True
 
     def _get_ranges_parts(self, scn):
@@ -301,6 +324,7 @@ class ParallelRender(types.Operator):
             self._report_progress()
 
         os.unlink(project_file)
+        cleanup_autosave_files(project_file)
 
     def _report_progress(self):
         rep_type, action = {
