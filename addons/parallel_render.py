@@ -131,6 +131,20 @@ class WorkerProcess(object):
     def wait(self):
         return self._p.wait()
 
+class ParallelRenderPreferences(types.AddonPreferences):
+    bl_idname = __name__
+
+    max_parallel = props.IntProperty(
+        name = "Number of background worker Blender instances",
+        min = 1,
+        default = cpu_count() - 1,
+        max = 10000
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "max_parallel")
+
 class ParallelRender(types.Operator):
     """Object Cursor Array"""
     bl_idname = "render.parallel_render"
@@ -165,18 +179,14 @@ class ParallelRender(types.Operator):
         max = 10000
     )
 
-    max_parallel = props.IntProperty(
-        name = "Maximum number of instances",
-        min = 1,
-        default = cpu_count() // 2,
-        max = 10000
-    )
-
     still_running = False
     thread = None 
     state = None
 
     def _load_property_values(self, scene):
+        if self._loaded:
+            return
+        self._loaded = True
         props = scene.get('parallel_render_props', {})
 
         for name, value in props.items():
@@ -188,7 +198,6 @@ class ParallelRender(types.Operator):
     def _store_property_values(self, scene):
         props = {
             'parts': self.parts,
-            'max_parallel': self.max_parallel,
             'fixed': self.fixed,
             'overwrite': self.overwrite,
             'batch_type': self.batch_type,
@@ -201,7 +210,8 @@ class ParallelRender(types.Operator):
 
         layout = self.layout
 
-        layout.prop(self, "max_parallel")
+        prefs = context.user_preferences.addons[__name__].preferences
+        layout.prop(prefs, "max_parallel")
 
         layout.prop(self, "overwrite")
         layout.prop(self, "batch_type", expand=True)
@@ -209,8 +219,11 @@ class ParallelRender(types.Operator):
         if hasattr(self, sub_prop):
             layout.prop(self, sub_prop)
 
+    def __init__(self):
+        super(ParallelRender, self).__init__()
+        self._loaded = False
+
     def check(self, context):
-        self._store_property_values(context.scene)
         return True
 
     def _get_ranges_parts(self, scn):
@@ -344,6 +357,7 @@ class ParallelRender(types.Operator):
             ))
         
     def execute(self, context):
+        self._store_property_values(context.scene)
         scn = context.scene
         wm = context.window_manager
         self.timer = wm.event_timer_add(0.5, context.window)
