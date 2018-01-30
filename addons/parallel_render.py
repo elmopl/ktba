@@ -131,6 +131,12 @@ class WorkerProcess(object):
     def wait(self):
         return self._p.wait()
 
+def _valid_ffmpeg_executable(path):
+    return os.path.exists(path)
+
+def _ffmpeg_enabled(path):
+    return path and _valid_ffmpeg_executable(path)
+
 class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
 
@@ -141,9 +147,19 @@ class ParallelRenderPreferences(types.AddonPreferences):
         max = 10000
     )
 
+    ffmpeg_executable = props.StringProperty(
+        name = "Path to ffmpeg executable",
+        default = "",
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "max_parallel")
+
+        path = self.ffmpeg_executable
+        if path and not _valid_ffmpeg_executable(path):
+            layout.label("No such file", icon = 'ERROR')
+        layout.prop(self, "ffmpeg_executable")
 
 class ParallelRender(types.Operator):
     """Object Cursor Array"""
@@ -168,6 +184,10 @@ class ParallelRender(types.Operator):
     mixdown = props.BoolProperty(
         name = "Mixdown sound",
         default = True,
+    )
+
+    concatenate = props.BoolProperty(
+        name = "Concatenate output files into one",
     )
 
     fixed = props.IntProperty(
@@ -207,6 +227,7 @@ class ParallelRender(types.Operator):
             'overwrite': self.overwrite,
             'mixdown': self.mixdown,
             'batch_type': self.batch_type,
+            'concatenate': self.concatenate,
         }
 
         scene['parallel_render_props'] = props
@@ -220,11 +241,19 @@ class ParallelRender(types.Operator):
         layout.prop(prefs, "max_parallel")
 
         layout.prop(self, "overwrite")
-        layout.prop(self, "mixdown")
         layout.prop(self, "batch_type", expand=True)
         sub_prop = str(self.batch_type)
         if hasattr(self, sub_prop):
             layout.prop(self, sub_prop)
+
+        layout.prop(self, "mixdown")
+
+        sub = layout.row()
+        sub.prop(self, "concatenate")
+        if not _valid_ffmpeg_executable(prefs.ffmpeg_executable):
+            self.concatenate = False
+            sub.enabled = False
+
 
     def __init__(self):
         super(ParallelRender, self).__init__()
@@ -282,7 +311,7 @@ class ParallelRender(types.Operator):
         }
         self.summary_mutex = Lock()
 
-        RunResult = namedtuple('RunResult', ('range', 'command', 'rc'))
+        RunResult = namedtuple('RunResult', ('range', 'command', 'rc', 'output_file'))
 
         project_file = tempfile.NamedTemporaryFile(
             delete=False,
@@ -301,6 +330,7 @@ class ParallelRender(types.Operator):
         def run(args):
             rng, cmd = args
             res = None
+            output_file = None
 
             if self.state == 'Running':
                 try:
@@ -317,13 +347,14 @@ class ParallelRender(types.Operator):
                         with self.summary_mutex:
                             self.summary['frames_done'] += 1
                     status_msg = 'Worker finished writing {}'.format(msg['output_file'])
+                    output_file = msg['output_file']
                     LOGGER.info(status_msg)
                     print(status_msg)
                     res = worker.wait()
                 except Exception as exc:
                     LOGGER.exception(exc)
                     res = -1
-            return RunResult(rng, cmd, res)
+            return RunResult(rng, cmd, res, output_file)
 
         self.state = 'Running'
         self.report({'INFO'}, 'Starting 0/{0} [0.0%]'.format(
@@ -343,19 +374,66 @@ class ParallelRender(types.Operator):
                 
             self._report_progress()
 
-        if self.mixdown:
-            sound_path = os.path.splitext(bpy.context.scene.render.frame_path())[0] + '.mp3'
+        sound_path = os.path.splitext(bpy.context.scene.render.frame_path())[0] + '.mp3'
+        if self.state == 'Running' and self.mixdown:
+            self.state = 'Mixdown'
             with self.summary_mutex:
                 self.report({'INFO'}, 'Mixing down sound')
                 bpy.ops.sound.mixdown(filepath = sound_path)
             self._report_progress()
+            self.state = 'Running'
+
+        if self.state == 'Running' and self.concatenate:
+            self.state = 'Concatenate'
+            self.report({'INFO'}, 'Concatenating')
+            concatenate_files = tempfile.NamedTemporaryFile(delete=False, mode = 'wt')
+            with concatenate_files as data:
+                for range, res in sorted(results.items()):
+                    data.write("file '{}'\n".format(res.output_file))
+
+            outfile = bpy.context.scene.render.frame_path()
+
+            sound = ()
+            if self.mixdown:
+                sound = ('-i', sound_path, '-codec:a', 'mp3lame', '-q:a', '0')
+
+            overwrite = ('-y' if bool(self.overwrite) else '-n',)
+
+            base_cmd = (
+                self.ffmpeg_executable,
+                '-nostdin',
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', concatenate_files.name,
+                '-codec:v', 'copy',
+                outfile,
+            )
+
+            cmd = base_cmd + sound + overwrite
+
+            print(cmd)
+
+            res = subprocess.call(cmd)
+            if res != 0:
+                self.state = 'Failed'
+
+        if self.state == 'Running':
+            self.state = 'Clean'
+            os.unlink(concatenate_files.name)
+            os.unlink(sound_path)
+            for res in results.values():
+                os.unlink(res.output_file)
+            self.state = 'Running'
 
         os.unlink(project_file)
         cleanup_autosave_files(project_file)
 
     def _report_progress(self):
         rep_type, action = {
-            'Running': ('INFO', 'Completed'),
+            'Clean': ('INFO', 'Cleaning Up'),
+            'Running': ('INFO', 'Rendering'),
+            'Mixdown': ('INFO', 'Mixing Sound'),
+            'Concatenate': ('INFO', 'Concatenating'),
             'Failed': ('ERROR', 'Failed'),
             'Cancelling': ('WARNING', 'Cancelling'),
         }[self.state]
@@ -378,7 +456,10 @@ class ParallelRender(types.Operator):
         wm.modal_handler_add(self)
         wm.progress_begin(0., 100.)
         prefs = context.user_preferences.addons[__name__].preferences
+
         self.max_parallel = prefs.max_parallel
+        self.ffmpeg_executable = prefs.ffmpeg_executable
+
         self.thread = Thread(target=self._run, args=(scn,))
         self.thread.start()
         return{'RUNNING_MODAL'}
