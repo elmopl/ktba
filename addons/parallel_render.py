@@ -165,6 +165,11 @@ class ParallelRender(types.Operator):
         default = True,
     )
 
+    mixdown = props.BoolProperty(
+        name = "Mixdown sound",
+        default = True,
+    )
+
     fixed = props.IntProperty(
         name = "Number of frames per batch",
         min = 1,
@@ -200,6 +205,7 @@ class ParallelRender(types.Operator):
             'parts': self.parts,
             'fixed': self.fixed,
             'overwrite': self.overwrite,
+            'mixdown': self.mixdown,
             'batch_type': self.batch_type,
         }
 
@@ -214,6 +220,7 @@ class ParallelRender(types.Operator):
         layout.prop(prefs, "max_parallel")
 
         layout.prop(self, "overwrite")
+        layout.prop(self, "mixdown")
         layout.prop(self, "batch_type", expand=True)
         sub_prop = str(self.batch_type)
         if hasattr(self, sub_prop):
@@ -250,7 +257,7 @@ class ParallelRender(types.Operator):
             yield (start, min(start + increment, end))
             start += increment + 1
 
-    def _run(self, scn, prefs):
+    def _run(self, scn):
         make_ranges = getattr(self, '_get_ranges_{0}'.format(str(self.batch_type)))
         ranges = tuple(make_ranges(scn))
 
@@ -323,7 +330,7 @@ class ParallelRender(types.Operator):
             len(cmds)
         ))
 
-        with Pool(prefs.max_parallel) as pool:
+        with Pool(self.max_parallel) as pool:
             pending = pool.imap_unordered(run, cmds)
             results = {}
             for num, res in enumerate(pending, 1):
@@ -334,6 +341,13 @@ class ParallelRender(types.Operator):
                 if any(res.rc not in (0, None) for res in results.values()):
                     self.state = 'Failed'
                 
+            self._report_progress()
+
+        if self.mixdown:
+            sound_path = os.path.splitext(bpy.context.scene.render.frame_path())[0] + '.mp3'
+            with self.summary_mutex:
+                self.report({'INFO'}, 'Mixing down sound')
+                bpy.ops.sound.mixdown(filepath = sound_path)
             self._report_progress()
 
         os.unlink(project_file)
@@ -364,7 +378,8 @@ class ParallelRender(types.Operator):
         wm.modal_handler_add(self)
         wm.progress_begin(0., 100.)
         prefs = context.user_preferences.addons[__name__].preferences
-        self.thread = Thread(target=self._run, args=(scn, prefs))
+        self.max_parallel = prefs.max_parallel
+        self.thread = Thread(target=self._run, args=(scn,))
         self.thread.start()
         return{'RUNNING_MODAL'}
 
