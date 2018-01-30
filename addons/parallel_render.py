@@ -119,7 +119,7 @@ class WorkerProcess(object):
         # This is rather arbitrary.
         # It is meant to protect accept() from hanging in case
         # something very wrong happens to launched process.
-        self._sck.settimeout(5)
+        self._sck.settimeout(30)
 
         conn, _addr = self._sck.accept()
 
@@ -250,7 +250,7 @@ class ParallelRender(types.Operator):
             yield (start, min(start + increment, end))
             start += increment + 1
 
-    def _run(self, scn):
+    def _run(self, scn, prefs):
         make_ranges = getattr(self, '_get_ranges_{0}'.format(str(self.batch_type)))
         ranges = tuple(make_ranges(scn))
 
@@ -323,7 +323,7 @@ class ParallelRender(types.Operator):
             len(cmds)
         ))
 
-        with Pool(int(self.max_parallel)) as pool:
+        with Pool(prefs.max_parallel) as pool:
             pending = pool.imap_unordered(run, cmds)
             results = {}
             for num, res in enumerate(pending, 1):
@@ -363,7 +363,8 @@ class ParallelRender(types.Operator):
         self.timer = wm.event_timer_add(0.5, context.window)
         wm.modal_handler_add(self)
         wm.progress_begin(0., 100.)
-        self.thread = Thread(target=self._run, args=(scn,))
+        prefs = context.user_preferences.addons[__name__].preferences
+        self.thread = Thread(target=self._run, args=(scn, prefs))
         self.thread.start()
         return{'RUNNING_MODAL'}
 
