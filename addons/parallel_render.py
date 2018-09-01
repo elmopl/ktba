@@ -131,11 +131,30 @@ class WorkerProcess(object):
     def wait(self):
         return self._p.wait()
 
-def _valid_ffmpeg_executable(path):
-    return os.path.exists(path)
+class ExecutableNotValid(Exception):
+    pass
+
+def _add_multiline_label(layout, lines, icon='NONE'):
+    for line in lines:
+        row = layout.row()
+        row.alignment = 'CENTER'
+        row.label(line, icon=icon)
+        icon='NONE'
+
+def _ensure_valid_ffmpeg_executable(path):
+    if not os.path.exists(path):
+        raise ExecutableNotValid("Path `{}` does not exist".format(path))
+    if not os.path.isfile(path):
+        raise ExecutableNotValid("Path `{}` is not a file".format(path))
+    if not os.access(path, os.X_OK):
+        raise ExecutableNotValid("Path `{}` is not executable".format(path))
 
 def _ffmpeg_enabled(path):
-    return path and _valid_ffmpeg_executable(path)
+    try:
+        path and _ensure_valid_ffmpeg_executable(path)
+        return True
+    except ExecutableNotValid:
+        return False
 
 class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
@@ -157,9 +176,17 @@ class ParallelRenderPreferences(types.AddonPreferences):
         layout.prop(self, "max_parallel")
 
         path = self.ffmpeg_executable
-        if path and not _valid_ffmpeg_executable(path):
-            layout.label("No such file", icon = 'ERROR')
         layout.prop(self, "ffmpeg_executable")
+        if path:
+            try:
+                _ensure_valid_ffmpeg_executable(path)
+                version = subprocess.check_output((path, '-version')).decode('utf-8')
+                layout.label('Version: {}'.format(version), icon='INFO')
+            except ExecutableNotValid as exc:
+                layout.label(str(exc), icon = 'ERROR')
+
+def _need_temporary_file(data):
+    return data.is_dirty
 
 class ParallelRender(types.Operator):
     """Object Cursor Array"""
@@ -237,6 +264,16 @@ class ParallelRender(types.Operator):
 
         layout = self.layout
 
+        if _need_temporary_file(bpy.data):
+            _add_multiline_label(
+                layout,
+                [
+                    'Unsaved changes to project.',
+                    'Will attempt to create temporary file.',
+                ],
+                icon='ERROR',
+            )
+
         prefs = context.user_preferences.addons[__name__].preferences
         layout.prop(prefs, "max_parallel")
 
@@ -250,10 +287,14 @@ class ParallelRender(types.Operator):
 
         sub = layout.row()
         sub.prop(self, "concatenate")
-        if not _valid_ffmpeg_executable(prefs.ffmpeg_executable):
+        try:
+            _ensure_valid_ffmpeg_executable(prefs.ffmpeg_executable)
+        except ExecutableNotValid as exc:
             self.concatenate = False
             sub.enabled = False
+            sub.label('Check add-on settings', text_ctxt=str(exc), icon='ERROR')
 
+        layout.row().label('Will render frames from {} to {}'.format(context.scene.frame_start, context.scene.frame_end))
 
     def __init__(self):
         super(ParallelRender, self).__init__()
@@ -313,18 +354,22 @@ class ParallelRender(types.Operator):
 
         RunResult = namedtuple('RunResult', ('range', 'command', 'rc', 'output_file'))
 
-        project_file = tempfile.NamedTemporaryFile(
-            delete=False,
-            # Temporary project files has to be in the
-            # same directory to ensure relative paths work.
-            dir=bpy.path.abspath("//"),
-            prefix=os.path.splitext(os.path.basename(bpy.data.filepath))[0] + '_',
-            suffix='.blend',
-        )
+        if _need_temporary_file(bpy.data):
+            project_file = tempfile.NamedTemporaryFile(
+                delete=False,
+                # Temporary project files has to be in the
+                # same directory to ensure relative paths work.
+                dir=bpy.path.abspath("//"),
+                prefix=os.path.splitext(os.path.basename(bpy.data.filepath))[0] + '_',
+                suffix='.blend',
+            )
 
-        project_file = project_file.name
-        self.report({'INFO'}, 'Saving temporary file {0}'.format(project_file))
-        bpy.ops.wm.save_as_mainfile(filepath=project_file, copy=True)
+            project_file = project_file.name
+            self.report({'INFO'}, 'Saving temporary file {0}'.format(project_file))
+            bpy.ops.wm.save_as_mainfile(filepath=project_file, copy=True)
+        else:
+            project_file = bpy.data.filepath
+
         assert os.path.exists(project_file)
 
         def run(args):
@@ -425,8 +470,9 @@ class ParallelRender(types.Operator):
                 os.unlink(res.output_file)
             self.state = 'Running'
 
-        os.unlink(project_file)
-        cleanup_autosave_files(project_file)
+        if _need_temporary_file(bpy.data):
+            os.unlink(project_file)
+            cleanup_autosave_files(project_file)
 
     def _report_progress(self):
         rep_type, action = {
@@ -440,7 +486,7 @@ class ParallelRender(types.Operator):
 
         with self.summary_mutex:
             self.report({rep_type}, '{0} Batches: {1}/{2} Frames: {3}/{4} [{5:.1f}%]'.format(
-                action,
+                action.replace('ing', 'ed'),
                 self.summary['batches_done'],
                 self.summary['batches'],
                 self.summary['frames_done'],
@@ -462,7 +508,7 @@ class ParallelRender(types.Operator):
 
         self.thread = Thread(target=self._run, args=(scn,))
         self.thread.start()
-        return{'RUNNING_MODAL'}
+        return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
         wm = context.window_manager
