@@ -34,16 +34,6 @@ bl_info = {
     "category": "VSE"
 }
 
-def cleanup_autosave_files(project_file):
-    # TODO: Work out proper way to clean up .blend{n} files
-    try:
-        n = 1
-        while True:
-            os.unlink(project_file + str(n))
-            n += 1
-    except OSError:
-        pass
-
 class MessageChannel(object):
     MSG_SIZE_FMT = '!i'
     MSG_SIZE_SIZE = struct.calcsize(MSG_SIZE_FMT)
@@ -80,6 +70,38 @@ class MessageChannel(object):
             return None
         return json.loads(self._recv(msg_size).decode('utf8'))
 
+class CurrentProjectFile(object):
+    def __init__(self):
+        self.path = None
+
+    def __enter__(self):
+        self.path = bpy.data.filepath
+        return self
+    
+    def __exit__(self, exc_type, exc_value, tb):
+        self.path = None
+
+class TemporaryProjectCopy(object):
+    def __init__(self):
+        self.path = None
+
+    def __enter__(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, os.path.basename(bpy.data.filepath))
+
+        bpy.ops.wm.save_as_mainfile(
+            filepath=self.path,
+            copy=True,
+            check_existing=False,
+            relative_remap=True,
+        )
+
+        assert os.path.exists(self.path)
+        return self
+
+    def __exit__(self, exc_type, exc_value, tb):
+        shutil.rmtree(self.tmpdir)
+
 class WorkerProcess(object):
     @staticmethod
     def read_config():
@@ -95,7 +117,7 @@ class WorkerProcess(object):
         self._sck.listen(1)
         self._p = None
         self._incoming = None
-        self._project_file = project_file or bpy.data.filepath
+        self._project_file = project_file
 
     def __enter__(self):
         cmd = (
@@ -217,6 +239,10 @@ class ParallelRender(types.Operator):
         name = "Concatenate output files into one",
     )
 
+    clean_up_parts = props.BoolProperty(
+        name = "Clean up partial files (after successful concatenation)",
+    )
+
     fixed = props.IntProperty(
         name = "Number of frames per batch",
         min = 1,
@@ -255,6 +281,7 @@ class ParallelRender(types.Operator):
             'mixdown': self.mixdown,
             'batch_type': self.batch_type,
             'concatenate': self.concatenate,
+            'clean_up_parts': self.clean_up_parts,
         }
 
         scene['parallel_render_props'] = props
@@ -289,8 +316,14 @@ class ParallelRender(types.Operator):
         sub.prop(self, "concatenate")
         try:
             _ensure_valid_ffmpeg_executable(prefs.ffmpeg_executable)
+            sub = layout.row()
+            sub.prop(self, "clean_up_parts")
+            sub.enabled = self.concatenate
+            if not self.concatenate:
+                self.clean_up_parts = False
         except ExecutableNotValid as exc:
             self.concatenate = False
+            self.clean_up_parts = False
             sub.enabled = False
             sub.label('Check add-on settings', text_ctxt=str(exc), icon='ERROR')
 
@@ -299,6 +332,7 @@ class ParallelRender(types.Operator):
     def __init__(self):
         super(ParallelRender, self).__init__()
         self._loaded = False
+        self.summary_mutex = None
 
     def check(self, context):
         return True
@@ -327,7 +361,9 @@ class ParallelRender(types.Operator):
             yield (start, min(start + increment, end))
             start += increment + 1
 
-    def _run(self, scn):
+    def _render_project_file(self, scn, project_file):
+        self.summary_mutex = Lock()
+
         make_ranges = getattr(self, '_get_ranges_{0}'.format(str(self.batch_type)))
         ranges = tuple(make_ranges(scn))
 
@@ -350,27 +386,9 @@ class ParallelRender(types.Operator):
             'frames': max(s[1] for s in ranges) - min(s[0] for s in ranges) + 1,
             'frames_done': 0,
         }
-        self.summary_mutex = Lock()
-
         RunResult = namedtuple('RunResult', ('range', 'command', 'rc', 'output_file'))
 
-        if _need_temporary_file(bpy.data):
-            project_file = tempfile.NamedTemporaryFile(
-                delete=False,
-                # Temporary project files has to be in the
-                # same directory to ensure relative paths work.
-                dir=bpy.path.abspath("//"),
-                prefix=os.path.splitext(os.path.basename(bpy.data.filepath))[0] + '_',
-                suffix='.blend',
-            )
-
-            project_file = project_file.name
-            self.report({'INFO'}, 'Saving temporary file {0}'.format(project_file))
-            bpy.ops.wm.save_as_mainfile(filepath=project_file, copy=True)
-        else:
-            project_file = bpy.data.filepath
-
-        assert os.path.exists(project_file)
+        self.report({'INFO'}, 'Working on file {0}'.format(project_file))
 
         def run(args):
             rng, cmd = args
@@ -459,20 +477,31 @@ class ParallelRender(types.Operator):
             print(cmd)
 
             res = subprocess.call(cmd)
-            if res != 0:
+            if res == 0:
+                self.state = 'Running'
+            else:
                 self.state = 'Failed'
 
-        if self.state == 'Running':
-            self.state = 'Clean'
+        if self.state == 'Running' and self.clean_up_parts:
+            self.state = 'Cleaning up'
+            print('Removing:')
             os.unlink(concatenate_files.name)
+            print(concatenate_files.name)
             os.unlink(sound_path)
+            print(sound_path)
             for res in results.values():
                 os.unlink(res.output_file)
+                print(res.output_file)
             self.state = 'Running'
 
+    def _run(self, scn):
         if _need_temporary_file(bpy.data):
-            os.unlink(project_file)
-            cleanup_autosave_files(project_file)
+            work_project_file = TemporaryProjectCopy()
+        else:
+            work_project_file = CurrentProjectFile()
+
+        with work_project_file:
+            self._render_project_file(scn, work_project_file.path)
 
     def _report_progress(self):
         rep_type, action = {
@@ -511,6 +540,9 @@ class ParallelRender(types.Operator):
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
+        if self.summary_mutex is None:
+            return {'PASS_THROUGH'}
+
         wm = context.window_manager
 
         # Stop the thread when ESCAPE is pressed.
