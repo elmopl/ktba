@@ -516,7 +516,7 @@ class ParallelRender(types.Operator):
                 self.state = 'Failed'
 
         if self.state == 'Running' and props.clean_up_parts:
-            self.state = 'Cleaning up'
+            self.state = 'Cleaning'
             os.unlink(concatenate_files.name)
             os.unlink(sound_path)
             for res in results.values():
@@ -540,7 +540,7 @@ class ParallelRender(types.Operator):
             'Concatenate': ('INFO', 'Concatenating'),
             'Failed': ('ERROR', 'Failed'),
             'Cancelling': ('WARNING', 'Cancelling'),
-        }[self.state]
+        }.get(self.state, ('ERROR', 'unknown state `{}`'.format(self.state)))
 
         with self.summary_mutex:
             self.report({rep_type}, '{0} Batches: {1}/{2} Frames: {3}/{4} [{5:.1f}%]'.format(
