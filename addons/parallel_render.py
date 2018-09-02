@@ -95,19 +95,26 @@ class TemporaryProjectCopy(object):
             suffix='.blend',
         )
         project_file.close()
-        self.path = project_file.name
+        try:
+            self.path = project_file.name
 
-        bpy.ops.wm.save_as_mainfile(
-            filepath=self.path,
-            copy=True,
-            check_existing=False,
-            relative_remap=True,
-        )
+            bpy.ops.wm.save_as_mainfile(
+                filepath=self.path,
+                copy=True,
+                check_existing=False,
+                relative_remap=True,
+            )
 
-        assert os.path.exists(self.path)
-        return self
+            assert os.path.exists(self.path)
+            return self
+        except:
+            self._cleanup()
+            raise
 
     def __exit__(self, exc_type, exc_value, tb):
+        self._cleanup()
+
+    def _cleanup(self):
         os.unlink(self.path)
         self._cleanup_autosave_files()
 
@@ -116,7 +123,7 @@ class TemporaryProjectCopy(object):
         try:
             n = 1
             while True:
-                os.unlink(project_file + str(n))
+                os.unlink(self.path + str(n))
                 n += 1
         except OSError:
             pass 
@@ -355,6 +362,12 @@ class ParallelRender(types.Operator):
 
     def check(self, context):
         return True
+
+    @classmethod
+    def poll(cls, context):
+        file_format = context.scene.render.image_settings.file_format
+        can_run = file_format in {'FFMPEG', 'XVID', 'THEORA', 'AVI_RAW', 'H264', 'AVI_JPEG'}
+        return can_run
 
     def _get_ranges_parts(self, scn):
         offset = scn.frame_start
