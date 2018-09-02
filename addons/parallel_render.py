@@ -86,8 +86,16 @@ class TemporaryProjectCopy(object):
         self.path = None
 
     def __enter__(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.path = os.path.join(self.tmpdir, os.path.basename(bpy.data.filepath))
+        project_file = tempfile.NamedTemporaryFile(
+            delete=False,
+            # Temporary project files has to be in the
+            # same directory to ensure relative paths work.
+            dir=bpy.path.abspath("//"),
+            prefix='parallel_render_copy_{}_'.format(os.path.splitext(os.path.basename(bpy.data.filepath))[0]),
+            suffix='.blend',
+        )
+        project_file.close()
+        self.path = project_file.name
 
         bpy.ops.wm.save_as_mainfile(
             filepath=self.path,
@@ -100,7 +108,18 @@ class TemporaryProjectCopy(object):
         return self
 
     def __exit__(self, exc_type, exc_value, tb):
-        shutil.rmtree(self.tmpdir)
+        os.unlink(self.path)
+        self._cleanup_autosave_files()
+
+    def _cleanup_autosave_files(self):
+        # TODO: Work out proper way to clean up .blend{n} files
+        try:
+            n = 1
+            while True:
+                os.unlink(project_file + str(n))
+                n += 1
+        except OSError:
+            pass 
 
 class WorkerProcess(object):
     @staticmethod
@@ -458,7 +477,7 @@ class ParallelRender(types.Operator):
 
             sound = ()
             if self.mixdown:
-                sound = ('-i', sound_path, '-codec:a', 'mp3lame', '-q:a', '0')
+                sound = ('-i', sound_path, '-codec:a', 'copy', '-q:a', '0')
 
             overwrite = ('-y' if bool(self.overwrite) else '-n',)
 
