@@ -7,14 +7,15 @@ It should come up as "VSE Parallel Render" in addons list.
 Copyright (c) 2017 Krzysztof Trzcinski
 """
 
-from bpy import types
 from bpy import props
+from bpy import types
 from collections import namedtuple
+from enum import Enum
 from multiprocessing import cpu_count
 from multiprocessing.dummy import Pool
 from queue import Queue
-from threading import Thread
 from threading import Lock
+from threading import Thread
 import bpy
 import json
 import logging
@@ -242,9 +243,10 @@ class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
 
     ffmpeg_executable = props.StringProperty(
-        name = "Path to ffmpeg executable",
-        default = "",
-        update = lambda self, context: self.update(context)
+        name="Path to ffmpeg executable",
+        default="",
+        update=lambda self, context: self.update(context),
+        subtype='FILE_PATH',
     )
 
     ffmpeg_status = props.StringProperty(default="")
@@ -334,6 +336,26 @@ class ParallelRenderPropertyGroup(types.PropertyGroup):
         default = cpu_count() * 2,
         max = 10000
     )
+
+class ParallelRenderState(Enum):
+    CLEANING = 1
+    RUNNING = 2
+    MIXDOWN = 3
+    CONCATENATE = 4
+    FAILED = 5
+    CANCELLING = 6
+
+    def describe(self):
+        return {
+            self.CLEANING: ('INFO', 'Cleaning Up'),
+            self.RUNNING: ('INFO', 'Rendering'),
+            self.MIXDOWN: ('INFO', 'Mixing Sound'),
+            self.CONCATENATE: ('INFO', 'Concatenating'),
+            self.FAILED: ('ERROR', 'Failed'),
+            self.CANCELLING: ('WARNING', 'Cancelling'),
+        }[self]
+
+
 
 class ParallelRender(types.Operator):
     """Object Cursor Array"""
@@ -426,7 +448,7 @@ class ParallelRender(types.Operator):
             res = None
             output_file = None
 
-            if self.state == 'Running':
+            if self.state == ParallelRenderState.RUNNING:
                 try:
                     worker = WorkerProcess(cmd, project_file=project_file)
                     msg = None
@@ -452,7 +474,7 @@ class ParallelRender(types.Operator):
                     res = -1
             return RunResult(rng, cmd, res, output_file)
 
-        self.state = 'Running'
+        self.state = ParallelRenderState.RUNNING
         self.report({'INFO'}, 'Starting 0/{0} [0.0%]'.format(
             len(cmds)
         ))
@@ -466,21 +488,21 @@ class ParallelRender(types.Operator):
                 results[res.range] = res
                 self._report_progress()
                 if any(res.rc not in (0, None) for res in results.values()):
-                    self.state = 'Failed'
+                    self.state = ParallelRenderState.FAILED
                 
             self._report_progress()
 
         sound_path = os.path.splitext(bpy.context.scene.render.frame_path())[0] + '.mp3'
-        if self.state == 'Running' and props.mixdown:
-            self.state = 'Mixdown'
+        if self.state == self.state.RUNNING and props.mixdown:
+            self.state = ParallelRenderState.MIXDOWN
             with self.summary_mutex:
                 self.report({'INFO'}, 'Mixing down sound')
                 bpy.ops.sound.mixdown(filepath = sound_path)
             self._report_progress()
-            self.state = 'Running'
+            self.state = ParallelRenderState.RUNNING
 
-        if self.state == 'Running' and props.concatenate:
-            self.state = 'Concatenate'
+        if self.state == ParallelRenderState.RUNNING and props.concatenate:
+            self.state = ParallelRenderState.CONCATENATE
             self.report({'INFO'}, 'Concatenating')
             concatenate_files = tempfile.NamedTemporaryFile(delete=False, mode = 'wt')
             with concatenate_files as data:
@@ -511,17 +533,17 @@ class ParallelRender(types.Operator):
 
             res = subprocess.call(cmd)
             if res == 0:
-                self.state = 'Running'
+                self.state = self.state.RUNNING
             else:
-                self.state = 'Failed'
+                self.state = self.state.FAILED
 
-        if self.state == 'Running' and props.clean_up_parts:
-            self.state = 'Cleaning'
+        if self.state == ParallelRenderState.RUNNING and props.clean_up_parts:
+            self.state = ParallelRenderState.CLEANING
             os.unlink(concatenate_files.name)
             os.unlink(sound_path)
             for res in results.values():
                 os.unlink(res.output_file)
-            self.state = 'Running'
+            self.state = ParallelRenderState.RUNNING
 
     def _run(self, scn):
         if _need_temporary_file(bpy.data):
@@ -533,15 +555,7 @@ class ParallelRender(types.Operator):
             self._render_project_file(scn, work_project_file.path)
 
     def _report_progress(self):
-        rep_type, action = {
-            'Clean': ('INFO', 'Cleaning Up'),
-            'Running': ('INFO', 'Rendering'),
-            'Mixdown': ('INFO', 'Mixing Sound'),
-            'Concatenate': ('INFO', 'Concatenating'),
-            'Failed': ('ERROR', 'Failed'),
-            'Cancelling': ('WARNING', 'Cancelling'),
-        }.get(self.state, ('ERROR', 'unknown state `{}`'.format(self.state)))
-
+        rep_type, action = self.state.describe()
         with self.summary_mutex:
             self.report({rep_type}, '{0} Batches: {1}/{2} Frames: {3}/{4} [{5:.1f}%]'.format(
                 action.replace('ing', 'ed'),
@@ -576,7 +590,7 @@ class ParallelRender(types.Operator):
 
         # Stop the thread when ESCAPE is pressed.
         if event.type == 'ESC':
-            self.state = 'Cancelling'
+            self.state = ParallelRenderState.CANCELLING
             self._report_progress()
 
         if event.type == 'TIMER':
