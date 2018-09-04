@@ -35,6 +35,9 @@ bl_info = {
     "category": "VSE"
 }
 
+def _can_concatenate(scene):
+    return scene.render.is_movie_format
+
 class ParallelRenderPanel(bpy.types.Panel):
     """Creates a Panel in the Object properties window"""
     bl_label = "Parallel Render"
@@ -47,13 +50,6 @@ class ParallelRenderPanel(bpy.types.Panel):
         layout = self.layout
 
         layout.operator('render.parallel_render', icon='RENDER_ANIMATION')
-
-        file_format = context.scene.render.image_settings.file_format
-        can_run = file_format in {'FFMPEG', 'XVID', 'THEORA', 'AVI_RAW', 'H264', 'AVI_JPEG'}
-        if not can_run:
-            layout.enabled = False
-            layout.label('Not available for render file format `{}`'.format(file_format), icon='ERROR')
-            return
 
         addon_props = context.user_preferences.addons[__name__].preferences
         props = context.scene.parallel_render_panel
@@ -70,8 +66,10 @@ class ParallelRenderPanel(bpy.types.Panel):
 
         sub = layout.row()
         sub.prop(props, "concatenate")
-
-        if addon_props.ffmpeg_valid:
+        if not _can_concatenate(context.scene):
+            sub.enabled = False
+            sub.label('Concatenation only available for movie file format', icon='ERROR')
+        elif addon_props.ffmpeg_valid:
             sub = layout.row()
             sub.prop(props, "clean_up_parts")
             sub.enabled = props.concatenate
@@ -492,7 +490,7 @@ class ParallelRender(types.Operator):
                 
             self._report_progress()
 
-        sound_path = os.path.splitext(bpy.context.scene.render.frame_path())[0] + '.mp3'
+        sound_path = os.path.splitext(scn.render.frame_path())[0] + '.mp3'
         if self.state == self.state.RUNNING and props.mixdown:
             self.state = ParallelRenderState.MIXDOWN
             with self.summary_mutex:
@@ -501,7 +499,7 @@ class ParallelRender(types.Operator):
             self._report_progress()
             self.state = ParallelRenderState.RUNNING
 
-        if self.state == ParallelRenderState.RUNNING and props.concatenate:
+        if self.state == ParallelRenderState.RUNNING and props.concatenate and _can_concatenate(scn):
             self.state = ParallelRenderState.CONCATENATE
             self.report({'INFO'}, 'Concatenating')
             concatenate_files = tempfile.NamedTemporaryFile(delete=False, mode = 'wt')
@@ -612,18 +610,6 @@ class ParallelRender(types.Operator):
 
     def invoke(self, context, event):
         wm = context.window_manager
-        if not bpy.context.scene.render.is_movie_format:
-            popup = wm.popup_menu(
-                lambda op, context: (
-                    op.layout.label("This feature is not supported."),
-                    op.layout.label("Render output format has to be a movie type."),
-
-                ),
-                title='Image output is not supported',
-                icon='CANCEL',
-            )
-            return {'FINISHED'}
-
         return wm.invoke_props_dialog(self)
 
 def register():
@@ -638,8 +624,6 @@ def unregister():
     bpy.utils.unregister_module(__name__)
 
 def render():
-    assert bpy.context.scene.render.is_movie_format
-
     channel, args = WorkerProcess.read_config()
     with channel:
         def send_stats(what):
