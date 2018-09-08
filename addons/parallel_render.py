@@ -195,6 +195,8 @@ class WorkerProcess(object):
             '--background',
             '--python',
             __file__,
+            '--',
+            'render'
         )
 
         self._p = subprocess.Popen(cmd, stdin = subprocess.PIPE)
@@ -285,6 +287,16 @@ class ParallelRenderPropertyGroup(types.PropertyGroup):
 
         if not self.concatenate:
             self.clean_up_parts = False
+
+    last_run_result = props.EnumProperty(
+        items = [
+            # (identifier, name, description, icon, number)
+            ('done', '', ''),
+            ('pending', '', ''),
+            ('failed', '', ''),
+        ],
+        name = "Render Batch Size"
+    )
 
     batch_type = props.EnumProperty(
         items = [
@@ -490,12 +502,13 @@ class ParallelRender(types.Operator):
                 
             self._report_progress()
 
-        sound_path = os.path.splitext(scn.render.frame_path())[0] + '.mp3'
+        sound_path = os.path.abspath(os.path.splitext(scn.render.frame_path())[0] + '.mp3')
         if self.state == self.state.RUNNING and props.mixdown:
             self.state = ParallelRenderState.MIXDOWN
             with self.summary_mutex:
                 self.report({'INFO'}, 'Mixing down sound')
-                bpy.ops.sound.mixdown(filepath = sound_path)
+                logging.info('Going to mixdown to %s')
+                bpy.ops.sound.mixdown(filepath=sound_path)
             self._report_progress()
             self.state = ParallelRenderState.RUNNING
 
@@ -544,13 +557,20 @@ class ParallelRender(types.Operator):
             self.state = ParallelRenderState.RUNNING
 
     def _run(self, scn):
+        props = scn.parallel_render_panel
+        props.last_run_result = 'pending'
+
         if _need_temporary_file(bpy.data):
             work_project_file = TemporaryProjectCopy()
         else:
             work_project_file = CurrentProjectFile()
 
-        with work_project_file:
-            self._render_project_file(scn, work_project_file.path)
+        try:
+            with work_project_file:
+                self._render_project_file(scn, work_project_file.path)
+            props.last_run_result = 'done'
+        except:
+            props.last_run_result = 'failed'
 
     def _report_progress(self):
         rep_type, action = self.state.describe()
@@ -654,6 +674,16 @@ def render():
             channel.send(None)
     sys.exit(0)
 
+def main():
+    # Get everything after '--' as those are arguments
+    # to our script
+    args = sys.argv[sys.argv.index('--') + 1:]
+
+    action = args[0]
+
+    if action == 'render':
+        render()
+
 if __name__ == "__main__":
-    render()
+    main()
 
