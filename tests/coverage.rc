@@ -1,0 +1,6 @@
+[run]
+branch = True
+concurrency =
+    multiprocessing
+    threading
+

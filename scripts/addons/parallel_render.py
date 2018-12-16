@@ -17,6 +17,7 @@ from queue import Queue
 from threading import Lock
 from threading import Thread
 import bpy
+import itertools
 import json
 import logging
 import os
@@ -84,18 +85,18 @@ class MessageChannel(object):
     def __init__(self, conn):
         self._conn = conn
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_t, exc_v, tb):
+        self._conn.close()
+
     def send(self, msg):
         msg = json.dumps(msg).encode('utf8')
         msg_size = len(msg)
         packed_size = struct.pack(self.MSG_SIZE_FMT, msg_size)
         self._conn.sendall(packed_size)
         self._conn.sendall(msg)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_t, exc_v, tb):
-        self._conn.close()
 
     def _recv(self, size):
         buf = b''
@@ -179,14 +180,22 @@ class WorkerProcess(object):
         sck.connect(tuple(config['controller']))
         return MessageChannel(sck), config['args']
 
-    def __init__(self, args, project_file):
+    def __init__(self, worker_id, args, project_file):
         self._args = args
+        self._p = None
+        self._incoming = None
+        self._sck = None
+        self._project_file = project_file
+        self._logger = LOGGER.getChild('worker[{}]'.format(worker_id))
+        self._connection = None
+
+    def _create_socket(self):
         self._sck = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sck.bind(('localhost', 0))
         self._sck.listen(1)
-        self._p = None
-        self._incoming = None
-        self._project_file = project_file
+
+    def _detroy_socket(self):
+        self._sck.close()
 
     def __enter__(self):
         cmd = (
@@ -199,27 +208,43 @@ class WorkerProcess(object):
             'render'
         )
 
-        self._p = subprocess.Popen(cmd, stdin = subprocess.PIPE)
+        self._create_socket()
 
-        config = {
-            'controller': self._sck.getsockname(),
-            'args': self._args
-        }
+        try:
+            self._logger.info("Starting worker process: %s", cmd)
+            self._p = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+            )
 
-        self._p.stdin.write(json.dumps(config).encode('utf8'))
-        self._p.stdin.close()
+            config = {
+                'controller': self._sck.getsockname(),
+                'args': self._args
+            }
 
-        # This is rather arbitrary.
-        # It is meant to protect accept() from hanging in case
-        # something very wrong happens to launched process.
-        self._sck.settimeout(30)
+            self._p.stdin.write(json.dumps(config).encode('utf8'))
+            self._p.stdin.close()
 
-        conn, _addr = self._sck.accept()
+            # This is rather arbitrary.
+            # It is meant to protect accept() from hanging in case
+            # something very wrong happens to launched process.
+            self._sck.settimeout(30)
 
-        return MessageChannel(conn)
+            self._connection, _addr = self._sck.accept()
+            return MessageChannel(self._connection)
+        except:
+            self._cleanup()
 
     def __exit__(self, exc_t, exc_v, tb):
-        pass
+        self._logger.info('waiting')
+        self._p.wait()
+        self._logger.info('finished with rc: %s', self._p.returncode)
+        self._p = None
+
+        self._connection.close()
+        self._connection = None
+
+        self._detroy_socket()
 
     def wait(self):
         return self._p.wait()
@@ -232,12 +257,15 @@ def _add_multiline_label(layout, lines, icon='NONE'):
         icon='NONE'
 
 def _is_valid_ffmpeg_executable(path):
+    res = None
     if not os.path.exists(path):
-        return "Path `{}` does not exist".format(path)
-    if not os.path.isfile(path):
-        return "Path `{}` is not a file".format(path)
-    if not os.access(path, os.X_OK):
-        return "Path `{}` is not executable".format(path)
+        res = "Path `{}` does not exist".format(path)
+    elif not os.path.isfile(path):
+        res = "Path `{}` is not a file".format(path)
+    elif not os.access(path, os.X_OK):
+        res = "Path `{}` is not executable".format(path)
+    LOGGER.info("_is_valid_ffmpeg_executable(%s): %s", path, res)
+    return res
 
 class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
@@ -282,6 +310,7 @@ class ParallelRenderPropertyGroup(types.PropertyGroup):
         addon_props = context.user_preferences.addons[__name__].preferences
 
         if not addon_props.ffmpeg_valid and self.concatenate:
+            LOGGER.info("ParallelRenderPropertyGroup forcing concatenate to false")
             self.concatenate = False
             self.clean_up_parts = False
 
@@ -423,6 +452,7 @@ class ParallelRender(types.Operator):
             start += increment + 1
 
     def _render_project_file(self, scn, project_file):
+        LOGGER.info("Going to render file %s", project_file)
         self.summary_mutex = Lock()
 
         props = scn.parallel_render_panel
@@ -460,7 +490,8 @@ class ParallelRender(types.Operator):
 
             if self.state == ParallelRenderState.RUNNING:
                 try:
-                    worker = WorkerProcess(cmd, project_file=project_file)
+                    worker_id = '{}-{}'.format(rng[0], rng[1])
+                    worker = WorkerProcess(worker_id, cmd, project_file=project_file)
                     msg = None
                     with worker as channel:
                         msgs = iter(channel.recv, None)
@@ -474,11 +505,9 @@ class ParallelRender(types.Operator):
                         with self.summary_mutex:
                             self.summary['frames_done'] += 1
                     if msg is not None:
-                        status_msg = 'Worker finished writing {}'.format(msg['output_file'])
                         output_file = msg['output_file']
+                        status_msg = 'Worker finished writing {}'.format(output_file)
                     LOGGER.info(status_msg)
-                    print(status_msg)
-                    res = worker.wait()
                 except Exception as exc:
                     LOGGER.exception(exc)
                     res = -1
@@ -512,15 +541,20 @@ class ParallelRender(types.Operator):
             self._report_progress()
             self.state = ParallelRenderState.RUNNING
 
+        LOGGER.info('Checkpoint %s %s %s', self.state, props.concatenate, _can_concatenate(scn))
         if self.state == ParallelRenderState.RUNNING and props.concatenate and _can_concatenate(scn):
+            fd, concatenate_files_name = tempfile.mkstemp()
+            os.close(fd)
+            LOGGER.info('Going to concatenate concatenate (list file: %s)', concatenate_files_name)
+
             self.state = ParallelRenderState.CONCATENATE
             self.report({'INFO'}, 'Concatenating')
-            concatenate_files = tempfile.NamedTemporaryFile(delete=False, mode = 'wt')
             with concatenate_files as data:
                 for range, res in sorted(results.items()):
                     data.write("file '{}'\n".format(res.output_file))
 
             outfile = bpy.context.scene.render.frame_path()
+            LOGGER.info('Final render name: %s', outfile)
 
             sound = ()
             if props.mixdown:
@@ -533,27 +567,32 @@ class ParallelRender(types.Operator):
                 '-nostdin',
                 '-f', 'concat',
                 '-safe', '0',
-                '-i', concatenate_files.name,
+                '-i', concatenate_files_name,
                 '-codec:v', 'copy',
                 outfile,
             )
 
             cmd = base_cmd + sound + overwrite
 
-            print(cmd)
-
+            LOGGER.info('Running: %s', cmd)
             res = subprocess.call(cmd)
+            LOGGER.info('Finished running [rc: %s]: %s',  rc, cmd)
             if res == 0:
                 self.state = self.state.RUNNING
             else:
                 self.state = self.state.FAILED
 
+            os.unlink(concatenate_files_name)
+
+            assert os.path.exists(outfile)
+
         if self.state == ParallelRenderState.RUNNING and props.clean_up_parts:
+            to_clean = [res.output_file for res in results.values()]
+            LOGGER.info('Going to clean up parts (%s)', to_clean)
             self.state = ParallelRenderState.CLEANING
-            os.unlink(concatenate_files.name)
             os.unlink(sound_path)
-            for res in results.values():
-                os.unlink(res.output_file)
+            for filename in to_clean:
+                os.unlink(filename)
             self.state = ParallelRenderState.RUNNING
 
     def _run(self, scn):
@@ -569,7 +608,8 @@ class ParallelRender(types.Operator):
             with work_project_file:
                 self._render_project_file(scn, work_project_file.path)
             props.last_run_result = 'done'
-        except:
+        except Exception as exc:
+            LOGGER.exception(exc)
             props.last_run_result = 'failed'
 
     def _report_progress(self):
@@ -657,6 +697,8 @@ def render():
             scn.frame_start = args['--start-frame']
             scn.frame_end = args['--end-frame']
 
+            #assert bpy.ops.wm.addon_enable(module='graph_utils') == {'FINISHED'}
+
             outfile = bpy.context.scene.render.frame_path()
             LOGGER.info("Writing file {}".format(outfile))
             if args['--overwrite'] or not os.path.exists(outfile):
@@ -670,6 +712,7 @@ def render():
                 'output_file': outfile,
             })
             LOGGER.info("Done writing {}".format(outfile))
+            assert os.path.exists(outfile)
         finally:
             channel.send(None)
     sys.exit(0)
@@ -678,6 +721,7 @@ def main():
     # Get everything after '--' as those are arguments
     # to our script
     args = sys.argv[sys.argv.index('--') + 1:]
+    logging.basicConfig(level=logging.INFO)
 
     action = args[0]
 
