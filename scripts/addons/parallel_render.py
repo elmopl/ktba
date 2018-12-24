@@ -258,12 +258,12 @@ def _add_multiline_label(layout, lines, icon='NONE'):
 
 def _is_valid_ffmpeg_executable(path):
     res = None
-    if not os.path.exists(path):
-        res = "Path `{}` does not exist".format(path)
-    elif not os.path.isfile(path):
-        res = "Path `{}` is not a file".format(path)
-    elif not os.access(path, os.X_OK):
-        res = "Path `{}` is not executable".format(path)
+
+    try:
+        subprocess.check_output((path, '-version'))
+    except (OSError, subprocess.CalledProcessError):
+        res = "Path `{}` cannot be executed".format(path)
+
     LOGGER.info("_is_valid_ffmpeg_executable(%s): %s", path, res)
     return res
 
@@ -549,7 +549,7 @@ class ParallelRender(types.Operator):
 
             self.state = ParallelRenderState.CONCATENATE
             self.report({'INFO'}, 'Concatenating')
-            with concatenate_files as data:
+            with open(concatenate_files_name, 'w') as data:
                 for range, res in sorted(results.items()):
                     data.write("file '{}'\n".format(res.output_file))
 
@@ -576,7 +576,7 @@ class ParallelRender(types.Operator):
 
             LOGGER.info('Running: %s', cmd)
             res = subprocess.call(cmd)
-            LOGGER.info('Finished running [rc: %s]: %s',  rc, cmd)
+            LOGGER.info('Finished running [rc: %s]: %s',  res, cmd)
             if res == 0:
                 self.state = self.state.RUNNING
             else:
