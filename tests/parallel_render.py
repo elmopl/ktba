@@ -333,9 +333,6 @@ class BlenderTest(unittest.TestCase):
             ['test0001-0030.avi']
         )
 
-
-
-
 def start_coverage():
     try:
         LOGGER.info("Preparing coverage for %s", sys.argv)
@@ -398,6 +395,7 @@ def launch_tests_under_blender(args):
     import coverage
     blender_executable = args.pop(1)
     ffmpeg_executable = args.pop(1)
+    coverage_module_path = os.path.realpath(os.path.dirname(os.path.dirname(coverage.__file__)))
     cmd = (
         blender_executable,
         '--background',
@@ -406,7 +404,7 @@ def launch_tests_under_blender(args):
         '--python', os.path.abspath(__file__),
         '--',
         'run',
-        os.path.realpath(os.path.dirname(os.path.dirname(coverage.__file__))),
+        coverage_module_path,
         os.path.realpath(ffmpeg_executable)
     ) + tuple(args[1:])
 
@@ -414,6 +412,7 @@ def launch_tests_under_blender(args):
 
     env = dict(os.environ)
     env['BLENDER_USER_SCRIPTS'] = os.path.realpath('scripts')
+    env['PYTHONPATH'] = coverage_module_path
     subprocess.check_call(cmd, cwd=outdir, env=env)
 
     cov = coverage.Coverage(config_file=os.environ['COVERAGE_PROCESS_START'])

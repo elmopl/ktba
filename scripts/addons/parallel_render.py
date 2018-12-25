@@ -718,6 +718,12 @@ def render():
     sys.exit(0)
 
 def main():
+    covstart = os.environ.get('COVERAGE_PROCESS_START')
+    if covstart is not None:
+        sys.path.extend(os.environ['PYTHONPATH'].split(os.path.sep))
+        import coverage
+        coverage.process_startup()
+
     # Get everything after '--' as those are arguments
     # to our script
     args = sys.argv[sys.argv.index('--') + 1:]
