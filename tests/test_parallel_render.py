@@ -7,6 +7,7 @@ PYTHONPATH=tests python3.6 tests/parallel_render.py test <path to blender> <path
 """
 from itertools import product
 from time import sleep
+from unittest import mock
 import logging
 import os
 import shutil
@@ -25,7 +26,34 @@ class BlenderTest(unittest.TestCase):
         import bpy
         cls.bpy = bpy
 
+class MockedDrawTest(BlenderTest):
+    def test_parallel_render_panel_draw(self):
+        import parallel_render
+        panel = mock.MagicMock()
+        context = mock.MagicMock()
+
+        addon_props = context.user_preferences.addons['parallel_render'].preferences
+
+        context.scene.render.is_movie_format = False
+        addon_props.ffmpeg_valid = True
+        parallel_render.ParallelRenderPanel.draw(panel, context)
+
+        context.scene.render.is_movie_format = True
+        addon_props.ffmpeg_valid = True
+        parallel_render.ParallelRenderPanel.draw(panel, context)
+
+        context.scene.render.is_movie_format = True
+        addon_props.ffmpeg_valid = False
+        parallel_render.ParallelRenderPanel.draw(panel, context)
+
+        context.scene.render.is_movie_format = False
+        addon_props.ffmpeg_valid = False
+        parallel_render.ParallelRenderPanel.draw(panel, context)
+
+class ParallelRenderTest(BlenderTest):
     def setUp(self):
+        self.bpy.ops.wm.read_homefile()
+
         self.bpy.ops.scene.new(type='NEW')
         self.scn = self.bpy.context.scene
         self.scn.sequence_editor_create()
@@ -100,16 +128,18 @@ class BlenderTest(unittest.TestCase):
 
         self.scn.frame_end = end_pos
 
-    def _render_video(self):
-        self.scn.render.filepath = '//output/test'
-        self.bpy.ops.wm.save_as_mainfile(filepath='test.blend')
-        what = self.bpy.ops.render.parallel_render()
+    def _trigger_render(self):
+        self.bpy.ops.render.parallel_render()
 
         while self.scn.parallel_render_panel.last_run_result == 'pending':
             LOGGER.info('waiting for output [state %s]', self.scn.parallel_render_panel.last_run_result)
             sleep(0.3)
 
         self.assertEqual(self.scn.parallel_render_panel.last_run_result, 'done')
+
+    def _render_video(self):
+        self.scn.render.filepath = '//output/test'
+        self._trigger_render()
 
     # Actual tests
 
@@ -299,7 +329,7 @@ class BlenderTest(unittest.TestCase):
             ['test0001-0011.avi', 'test0001-0030.avi', 'test0001-0030.mp3', 'test0012-0022.avi', 'test0023-0030.avi']
         )
 
-    def test_with_ffmpeg_with_cleanup(self):
+    def test_with_ffmpeg_with_cleanup_save(self):
         self._setup_video(
             user_prefs={
                 'ffmpeg_executable': self.FFMPEG_EXECUTABLE,
@@ -325,7 +355,26 @@ class BlenderTest(unittest.TestCase):
         )
 
         self._create_red_blue_green_sequence()
-        self._render_video()
+        self.scn.render.filepath = '//output/test'
+
+        self.bpy.ops.wm.save_as_mainfile(filepath='test.blend'),
+        self.assertEqual(
+            self.bpy.ops.wm.save_mainfile(),
+            {'FINISHED'},
+        )
+
+        self.assertTrue(self.bpy.data.is_saved)
+        # FIXME: sadly even though I just called `save_mainfile` we
+        # still get back "is_dirty"
+        # self.assertFalse(self.bpy.data.is_dirty)
+        import parallel_render
+        with parallel_render.CurrentProjectFile():
+            pass
+
+        self._trigger_render()
+
+        self.assertTrue(self.bpy.data.is_saved)
+        # self.assertFalse(self.bpy.data.is_dirty)
 
         # Expect just the final render
         self.assertEqual(
