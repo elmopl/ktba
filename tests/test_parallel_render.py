@@ -11,6 +11,7 @@ from unittest import mock
 import logging
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import unittest
@@ -26,6 +27,167 @@ class BlenderTest(unittest.TestCase):
         import bpy
         cls.bpy = bpy
 
+class MessageChannelTest(BlenderTest):
+    def test_unexpected_end(self):
+        import parallel_render
+        conn = mock.MagicMock()
+
+        channel = parallel_render.MessageChannel(conn)
+        with self.assertRaises(Exception):
+            channel.recv()
+
+        conn.recv.side_effect = [struct.pack(channel.MSG_SIZE_FMT, 0), None]
+        self.assertEqual(channel.recv(), None)
+
+class TemporaryProjectTest(BlenderTest):
+    @mock.patch('os.path.exists')
+    def test_temporary_project_file(self, exists):
+        import parallel_render
+        exists.return_value = False
+        with self.assertRaises(Exception):
+            with parallel_render.TemporaryProjectCopy() as test: pass
+
+class RangesTest(BlenderTest):
+    def test_parts(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.parts = 4
+        scene.frame_start = 12
+        scene.frame_end = 134
+
+        self.assertEqual(
+            [
+                (12, 41),
+                (42, 72),
+                (73, 103),
+                (104, 134),
+            ],
+            list(parallel_render.get_ranges_parts(scene)),
+        )
+
+    def test_tiny_parts(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.parts = 4
+        scene.frame_start = 8
+        scene.frame_end = 11
+
+        self.assertEqual(
+            [
+                (8, 11),
+            ],
+            list(parallel_render.get_ranges_parts(scene)),
+        )
+
+    def test_small_parts(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.parts = 4
+        scene.frame_start = 8
+        scene.frame_end = 13
+
+        self.assertEqual(
+            [
+                (8, 8),
+                (9, 10),
+                (11, 11),
+                (12, 13),
+            ],
+            list(parallel_render.get_ranges_parts(scene)),
+        )
+
+    def test_fixed(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.fixed = 31
+        scene.frame_start = 12
+        scene.frame_end = 134
+
+        self.assertEqual(
+            [
+                (12, 43),
+                (44, 75),
+                (76, 107),
+                (108, 134),
+            ],
+            list(parallel_render.get_ranges_fixed(scene)),
+        )
+
+    def test_exact_fixed(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.fixed = 31
+        scene.frame_start = 25
+        scene.frame_end = 25+30
+
+        self.assertEqual(
+            [
+                (25, 55),
+            ],
+            list(parallel_render.get_ranges_fixed(scene)),
+        )
+
+    def test_small_fixed(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.fixed = 31
+        scene.frame_start = 25
+        scene.frame_end = 25+31
+
+        self.assertEqual(
+            [
+                (25, 56),
+            ],
+            list(parallel_render.get_ranges_fixed(scene)),
+        )
+
+    def test_fixed_9(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.fixed = 9
+        scene.frame_start = 1
+        scene.frame_end = 100
+
+        self.assertEqual(
+            [
+                (1, 10),
+                (11, 20),
+                (21, 30),
+                (31, 40),
+                (41, 50),
+                (51, 60),
+                (61, 70),
+                (71, 80),
+                (81, 90),
+                (91, 100),
+            ],
+            list(parallel_render.get_ranges_fixed(scene)),
+        )
+
+    def test_small2_fixed(self):
+        import parallel_render
+
+        scene = mock.MagicMock()
+        scene.parallel_render_panel.fixed = 31
+        scene.frame_start = 25
+        scene.frame_end = 25+32
+
+        self.assertEqual(
+            [
+                (25, 56),
+                (57, 57),
+            ],
+            list(parallel_render.get_ranges_fixed(scene)),
+        )
+
+
 class MockedDrawTest(BlenderTest):
     def test_parallel_render_panel_draw(self):
         import parallel_render
@@ -34,21 +196,41 @@ class MockedDrawTest(BlenderTest):
 
         addon_props = context.user_preferences.addons['parallel_render'].preferences
 
-        context.scene.render.is_movie_format = False
-        addon_props.ffmpeg_valid = True
-        parallel_render.ParallelRenderPanel.draw(panel, context)
+        for is_dirty in (True, False):
+            with mock.patch('bpy.data') as data:
+                data.is_dirty = is_dirty
 
-        context.scene.render.is_movie_format = True
-        addon_props.ffmpeg_valid = True
-        parallel_render.ParallelRenderPanel.draw(panel, context)
+                context.scene.render.is_movie_format = False
+                addon_props.ffmpeg_valid = True
+                parallel_render.ParallelRenderPanel.draw(panel, context)
+                parallel_render.ParallelRender.check(panel, context)
+                parallel_render.ParallelRender.draw(panel, context)
+                parallel_render.ParallelRenderPreferences.draw(panel, context)
+                parallel_render.parallel_render_menu_draw(panel, context)
 
-        context.scene.render.is_movie_format = True
-        addon_props.ffmpeg_valid = False
-        parallel_render.ParallelRenderPanel.draw(panel, context)
+                context.scene.render.is_movie_format = True
+                addon_props.ffmpeg_valid = True
+                parallel_render.ParallelRenderPanel.draw(panel, context)
+                parallel_render.ParallelRender.draw(panel, context)
+                parallel_render.ParallelRender.check(panel, context)
+                parallel_render.ParallelRenderPreferences.draw(panel, context)
+                parallel_render.parallel_render_menu_draw(panel, context)
 
-        context.scene.render.is_movie_format = False
-        addon_props.ffmpeg_valid = False
-        parallel_render.ParallelRenderPanel.draw(panel, context)
+                context.scene.render.is_movie_format = True
+                addon_props.ffmpeg_valid = False
+                parallel_render.ParallelRenderPanel.draw(panel, context)
+                parallel_render.ParallelRender.draw(panel, context)
+                parallel_render.ParallelRender.check(panel, context)
+                parallel_render.ParallelRenderPreferences.draw(panel, context)
+                parallel_render.parallel_render_menu_draw(panel, context)
+
+                context.scene.render.is_movie_format = False
+                addon_props.ffmpeg_valid = False
+                parallel_render.ParallelRenderPanel.draw(panel, context)
+                parallel_render.ParallelRender.draw(panel, context)
+                parallel_render.ParallelRender.check(panel, context)
+                parallel_render.ParallelRenderPreferences.draw(panel, context)
+                parallel_render.parallel_render_menu_draw(panel, context)
 
 class ParallelRenderTest(BlenderTest):
     def setUp(self):
@@ -66,14 +248,15 @@ class ParallelRenderTest(BlenderTest):
             shutil.rmtree('output')
         except OSError:
             pass
+        os.makedirs('output')
 
     def tearDown(self):
         self.bpy.context.screen.scene = self.scn
 
     def _setup_video(self, project_prefs, user_prefs):
         render = self.scn.render
-        render.resolution_x = 1280
-        render.resolution_y = 720
+        render.resolution_x = 90
+        render.resolution_y = 120
         render.resolution_percentage = 25
         render.pixel_aspect_x = 1
         render.pixel_aspect_y = 1
@@ -135,11 +318,10 @@ class ParallelRenderTest(BlenderTest):
             LOGGER.info('waiting for output [state %s]', self.scn.parallel_render_panel.last_run_result)
             sleep(0.3)
 
-        self.assertEqual(self.scn.parallel_render_panel.last_run_result, 'done')
-
-    def _render_video(self):
+    def _render_video(self, expected_state='done'):
         self.scn.render.filepath = '//output/test'
         self._trigger_render()
+        self.assertEqual(self.scn.parallel_render_panel.last_run_result, expected_state)
 
     # Actual tests
 
@@ -356,31 +538,131 @@ class ParallelRenderTest(BlenderTest):
 
         self._create_red_blue_green_sequence()
         self.scn.render.filepath = '//output/test'
+        filepath = os.path.join(os.path.abspath('.'), 'test.blend')
 
-        self.bpy.ops.wm.save_as_mainfile(filepath='test.blend'),
         self.assertEqual(
-            self.bpy.ops.wm.save_mainfile(),
+            self.bpy.ops.wm.save_mainfile(filepath=filepath),
             {'FINISHED'},
         )
 
         self.assertTrue(self.bpy.data.is_saved)
+        self.assertTrue(os.path.exists(self.bpy.data.filepath))
+
         # FIXME: sadly even though I just called `save_mainfile` we
         # still get back "is_dirty"
+        # I shouldn't need to mock it, it should just work and this:
         # self.assertFalse(self.bpy.data.is_dirty)
-        import parallel_render
-        with parallel_render.CurrentProjectFile():
-            pass
+        # should be True
+        with mock.patch('parallel_render._need_temporary_file') as needs_temporary:
+            needs_temporary.return_value = False
 
-        self._trigger_render()
+            self._trigger_render()
 
-        self.assertTrue(self.bpy.data.is_saved)
-        # self.assertFalse(self.bpy.data.is_dirty)
+            self.assertTrue(self.bpy.data.is_saved)
+            # self.assertFalse(self.bpy.data.is_dirty)
 
-        # Expect just the final render
-        self.assertEqual(
-            sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
-            ['test0001-0030.avi']
+            # Expect just the final render
+            self.assertEqual(
+                sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
+                ['test0001-0030.avi']
+            )
+
+    def test_with_child_failure(self):
+        self._setup_video(
+            user_prefs={
+                'ffmpeg_executable': self.FFMPEG_EXECUTABLE,
+
+                # calculated, so shouldn' matter
+                'ffmpeg_status': '',
+                'ffmpeg_valid': False,
+            },
+            project_prefs={
+                'max_parallel': 8,
+                'overwrite': False,
+                'mixdown': True,
+                'concatenate': True,
+                'clean_up_parts': True,
+
+                'batch_type': 'fixed',
+                'fixed': 8,
+                
+                # unused here
+                'parts': 4,
+                'last_run_result': 'done',
+            },
         )
+
+        self._create_red_blue_green_sequence()
+
+        with mock.patch('subprocess.Popen') as Popen:
+            Popen.side_effect = Exception('TEST')
+            self._render_video(expected_state='failed')
+            # Expect nothing, as we can't Popen
+            self.assertEqual(
+                sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
+                []
+            )
+
+        #with mock.patch('parallel_render.MessageChannel') as MessageChannel:
+        #    MessageChannel.return_value = Exception('TEST')
+        #    self._render_video(expected_state='failed')
+        #    self.assertTrue(MessageChannel.called)
+
+        #    # Expect nothing, as we can't Popen
+        #    self.assertEqual(
+        #        sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
+        #        []
+        #    )
+
+        base_dir = os.path.realpath('output')
+
+        def create_output(filepath, rc):
+            process_mock = mock.MagicMock()
+            if filepath is not None:
+                filepath = os.path.join(base_dir, filepath)
+                LOGGER.info('Creating dummy file %s', filepath)
+                with open(filepath, 'w'):
+                    pass
+            process_mock.returncode = int(rc)
+            process_mock.wait.return_value = int(rc)
+            return process_mock
+
+        processes = iter((
+            create_output(filepath='test0001-0009.avi', rc=0),
+            create_output(filepath=None, rc=-11),
+            create_output(filepath='test0019-0027.avi', rc=1),
+            create_output(filepath=None, rc=-12),
+        ))
+
+        with mock.patch('parallel_render.Pool') as Pool:
+            Pool().__enter__().imap_unordered = map
+            Pool().__enter__().map = map
+            with mock.patch('subprocess.Popen') as Popen:
+                Popen.side_effect = lambda *_, **_kw: next(processes)
+                with mock.patch('parallel_render.MessageChannel') as MessageChannel:
+                    MessageChannel().recv.side_effect = [
+                        {'output_file': os.path.join(base_dir, 'test0001-0009.avi'), 'current_frame': 11},
+                        None,
+
+                        {'output_file': os.path.join(base_dir, 'test0010-0018.avi'), 'current_frame': 12},
+                        None,
+
+                        {'output_file': os.path.join(base_dir, 'test0019-0027.avi'), 'current_frame': 25},
+                        None,
+
+                        None,
+                    ]
+                    with mock.patch('socket.socket') as socket:
+                        socket().getsockname.return_value = 'does not matter'
+                        socket().accept.return_value = (mock.MagicMock(), mock.MagicMock())
+                        self._render_video(expected_state='failed')
+
+                        # Expect nothing, as we can't Popen
+                        self.assertEqual(
+                            sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
+                            ['test0001-0009.avi']
+                        )
+
 
 def start_coverage():
     try:

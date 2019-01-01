@@ -17,6 +17,7 @@ from queue import Queue
 from threading import Lock
 from threading import Thread
 import bpy
+import errno
 import itertools
 import json
 import logging
@@ -173,6 +174,8 @@ class TemporaryProjectCopy(object):
             pass 
 
 class WorkerProcess(object):
+    CONNECT_TIMEOUT = 30
+
     @staticmethod
     def read_config():
         config = json.load(sys.stdin)
@@ -188,6 +191,7 @@ class WorkerProcess(object):
         self._project_file = project_file
         self._logger = LOGGER.getChild('worker[{}]'.format(worker_id))
         self._connection = None
+        self.return_code = None
 
     def _create_socket(self):
         self._sck = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -210,44 +214,39 @@ class WorkerProcess(object):
 
         self._create_socket()
 
-        try:
-            self._logger.info("Starting worker process: %s", cmd)
-            self._p = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-            )
+        self._logger.info("Starting worker process: %s", cmd)
+        self._p = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+        )
 
-            config = {
-                'controller': self._sck.getsockname(),
-                'args': self._args
-            }
+        config = {
+            'controller': self._sck.getsockname(),
+            'args': self._args
+        }
 
-            self._p.stdin.write(json.dumps(config).encode('utf8'))
-            self._p.stdin.close()
+        self._p.stdin.write(json.dumps(config).encode('utf8'))
+        self._p.stdin.close()
 
-            # This is rather arbitrary.
-            # It is meant to protect accept() from hanging in case
-            # something very wrong happens to launched process.
-            self._sck.settimeout(30)
+        # This is rather arbitrary.
+        # It is meant to protect accept() from hanging in case
+        # something very wrong happens to launched process.
+        self._sck.settimeout(self.CONNECT_TIMEOUT)
 
-            self._connection, _addr = self._sck.accept()
-            return MessageChannel(self._connection)
-        except:
-            self._cleanup()
+        self._connection, _addr = self._sck.accept()
+        self._logger.info("Started worker process")
+        return MessageChannel(self._connection)
 
     def __exit__(self, exc_t, exc_v, tb):
         self._logger.info('waiting')
-        self._p.wait()
-        self._logger.info('finished with rc: %s', self._p.returncode)
+        self.return_code = self._p.wait()
+        self._logger.info('finished with rc: %s', self.return_code)
         self._p = None
 
         self._connection.close()
         self._connection = None
 
         self._detroy_socket()
-
-    def wait(self):
-        return self._p.wait()
 
 def _add_multiline_label(layout, lines, icon='NONE'):
     for line in lines:
@@ -394,6 +393,34 @@ class ParallelRenderState(Enum):
             self.CANCELLING: ('WARNING', 'Cancelling'),
         }[self]
 
+def get_ranges_parts(scn):
+    offset = scn.frame_start
+    current = 0
+    end = scn.frame_end - offset
+    length = end + 1
+    parts = int(scn.parallel_render_panel.parts)
+
+    if length <= parts:
+        yield (scn.frame_start, scn.frame_end)
+        return
+
+    for i in range(1, parts + 1):
+        end = i * length // parts
+        yield (offset + current, offset + end - 1)
+        current = end
+
+def get_ranges_fixed(scn):
+    start = scn.frame_start
+    end = scn.frame_end
+    increment = int(scn.parallel_render_panel.fixed)
+    while start <= end:
+        yield (start, min(start + increment, end))
+        start += increment + 1
+
+RANGE_CALCULATORS = {
+    'parts': get_ranges_parts,
+    'fixed': get_ranges_fixed,
+}
 
 
 class ParallelRender(types.Operator):
@@ -427,38 +454,14 @@ class ParallelRender(types.Operator):
     def check(self, context):
         return True
 
-    def _get_ranges_parts(self, scn):
-        offset = scn.frame_start
-        current = 0
-        end = scn.frame_end - offset
-        length = end + 1
-        parts = int(scn.parallel_render_panel.parts)
-
-        if length <= parts:
-            yield (scn.frame_start, scn.frame_end)
-            return
-
-        for i in range(1, parts + 1):
-            end = i * length // parts
-            yield (offset + current, offset + end - 1)
-            current = end
-
-    def _get_ranges_fixed(self, scn):
-        start = scn.frame_start
-        end = scn.frame_end
-        increment = int(scn.parallel_render_panel.fixed)
-        while start <= end:
-            yield (start, min(start + increment, end))
-            start += increment + 1
-
     def _render_project_file(self, scn, project_file):
         LOGGER.info("Going to render file %s", project_file)
         self.summary_mutex = Lock()
 
         props = scn.parallel_render_panel
 
-        make_ranges = getattr(self, '_get_ranges_{0}'.format(str(props.batch_type)))
-        ranges = tuple(make_ranges(scn))
+        range_type = str(props.batch_type)
+        ranges = tuple(RANGE_CALCULATORS[range_type](scn))
 
         cmds = tuple(
             (
@@ -504,10 +507,13 @@ class ParallelRender(types.Operator):
 
                         with self.summary_mutex:
                             self.summary['frames_done'] += 1
+
+                    res = worker.return_code
+
                     if msg is not None:
                         output_file = msg['output_file']
                         status_msg = 'Worker finished writing {}'.format(output_file)
-                    LOGGER.info(status_msg)
+                        LOGGER.info(status_msg)
                 except Exception as exc:
                     LOGGER.exception(exc)
                     res = -1
@@ -526,10 +532,19 @@ class ParallelRender(types.Operator):
                     self.summary['batches_done'] = num
                 results[res.range] = res
                 self._report_progress()
-                if any(res.rc not in (0, None) for res in results.values()):
-                    self.state = ParallelRenderState.FAILED
-                
-            self._report_progress()
+
+        for result in sorted(results.values(), key=lambda r: r.range[0]):
+            LOGGER.info('Result: %s', result)
+            if result.rc != 0:
+                self.state = ParallelRenderState.FAILED
+                if result.output_file is not None:
+                    LOGGER.error('Cleaning up failed %s', result.output_file)
+                    try:
+                        os.unlink(result.output_file)
+                    except OSError as exc:
+                        assert exc.errno == errno.ENOENT
+
+        self._report_progress()
 
         sound_path = os.path.abspath(os.path.splitext(scn.render.frame_path())[0] + '.mp3')
         if self.state == self.state.RUNNING and props.mixdown:
@@ -541,7 +556,7 @@ class ParallelRender(types.Operator):
             self._report_progress()
             self.state = ParallelRenderState.RUNNING
 
-        LOGGER.info('Checkpoint %s %s %s', self.state, props.concatenate, _can_concatenate(scn))
+        LOGGER.debug('Checkpoint %s %s %s', self.state, props.concatenate, _can_concatenate(scn))
         if self.state == ParallelRenderState.RUNNING and props.concatenate and _can_concatenate(scn):
             fd, concatenate_files_name = tempfile.mkstemp()
             os.close(fd)
@@ -607,7 +622,7 @@ class ParallelRender(types.Operator):
         try:
             with work_project_file:
                 self._render_project_file(scn, work_project_file.path)
-            props.last_run_result = 'done'
+            props.last_run_result = 'done' if self.state == ParallelRenderState.RUNNING else 'failed'
         except Exception as exc:
             LOGGER.exception(exc)
             props.last_run_result = 'failed'
@@ -686,31 +701,31 @@ def unregister():
 def render():
     channel, args = WorkerProcess.read_config()
     with channel:
-        def send_stats(what):
-            channel.send({
-                'current_frame': bpy.context.scene.frame_current,
-            })
-
         try:
             scn_name = args['--scene']
             scn = bpy.data.scenes[scn_name]
             scn.frame_start = args['--start-frame']
             scn.frame_end = args['--end-frame']
 
-            #assert bpy.ops.wm.addon_enable(module='graph_utils') == {'FINISHED'}
-
             outfile = bpy.context.scene.render.frame_path()
+
+            def _update_progress(_ignored):
+                send_stats(bpy.context.scene.frame_current)
+
+            def send_stats(frame):
+                channel.send({
+                    'output_file': outfile,
+                    'current_frame':  frame,
+                })
+
             LOGGER.info("Writing file {}".format(outfile))
             if args['--overwrite'] or not os.path.exists(outfile):
-                bpy.app.handlers.render_stats.append(send_stats)
+                bpy.app.handlers.render_stats.append(_update_progress)
                 bpy.ops.render.render(animation=True, scene = scn_name)
             else:
-                print('{0} alread exists.'.format(outfile))
+                LOGGER.warning('%s already exists.', outfile)
 
-            channel.send({
-                'current_frame': scn.frame_end,
-                'output_file': outfile,
-            })
+            send_stats(scn.frame_end)
             LOGGER.info("Done writing {}".format(outfile))
             assert os.path.exists(outfile)
         finally:
