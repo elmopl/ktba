@@ -670,57 +670,21 @@ class ParallelRenderTest(BlenderTest):
                             ['test0001-0009.avi']
                         )
 
-
-def start_coverage():
-    try:
-        LOGGER.info("Preparing coverage for %s", sys.argv)
-        import coverage
-        coverage.process_startup()
-        LOGGER.info("Started coverage")
-    except ImportError as exc:
-        LOGGER.warning("Could not import coverage module", exc_info=True)
-
 def run_tests(args):
     extra_pythonpath = args[1]
     ffmpeg_path = args[2]
     sys.path.append(extra_pythonpath)
     LOGGER.info("Appending extra PYTHONPATH %s", extra_pythonpath)
-    start_coverage()
+
+    import coverage
+    coverage.process_startup()
 
     BlenderTest.FFMPEG_EXECUTABLE = ffmpeg_path
     unittest.main(
         argv=['<blender executable>'] + args[3:],
     )
 
-def make_tests_coveragerc(base_file, test_outdir):
-    tests_coverage_rc = os.path.realpath(os.path.join(test_outdir, 'coverage.tests.rc'))
-    with open(tests_coverage_rc, 'w') as out:
-        with open(base_file, 'r') as src:
-            shutil.copyfileobj(src, out)
-        out.write('data_file = {}\n'.format(os.path.join(test_outdir, '.coverage')))
-        out.write('omit = \n')
-        out.write('    */scripts/startup/*\n')
-        out.write('    */scripts/modules/*\n')
-        out.write('    */scripts/addons/cycles/*\n')
-        out.write('    */scripts/addons/io_*/*\n')
-        out.write('\n')
-        out.write('[paths]\n')
-        out.write('source = \n')
-        out.write('  */scripts\n')
-    os.environ['COVERAGE_PROCESS_START'] = tests_coverage_rc
-
 def launch_tests_under_blender(args):
-    outdir = os.path.realpath('tests_output')
-    shutil.rmtree(outdir)
-    os.makedirs(outdir, exist_ok=True)
-
-    make_tests_coveragerc(
-        base_file=os.path.join(os.path.dirname(__file__), 'coverage.rc'),
-        test_outdir=outdir
-    )
-
-    start_coverage()
-
     import coverage
     blender_executable = args.pop(1)
     ffmpeg_executable = args.pop(1)
@@ -742,11 +706,8 @@ def launch_tests_under_blender(args):
     env = dict(os.environ)
     env['BLENDER_USER_SCRIPTS'] = os.path.realpath('scripts')
     env['PYTHONPATH'] = coverage_module_path
+    outdir = os.path.realpath('tests_output')
     subprocess.check_call(cmd, cwd=outdir, env=env)
-
-    cov = coverage.Coverage(config_file=os.environ['COVERAGE_PROCESS_START'])
-    cov.combine()
-    cov.report(show_missing=True)
 
 MAIN_ACTIONS = {
     'test': launch_tests_under_blender,

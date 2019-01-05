@@ -34,6 +34,7 @@ script:
     - sh tests/run.sh
 
 after_success:
+    - codecov -f tests_output/coverage.xml
 
 notifications:
     email:
