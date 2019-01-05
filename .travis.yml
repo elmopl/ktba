@@ -1,0 +1,41 @@
+language: python
+python:
+    - 3.6
+
+cache:
+    apt: true
+    directories:
+        - $HOME/.cache/pip
+addons:
+    apt:
+        packages:
+            - blender
+
+before_install:
+    - sudo add-apt-repository -y ppa:jonathonf/ffmpeg-3
+    - sudo apt-get -y update
+    - sudo apt-get install -y ffmpeg
+
+install:
+    - BLENDER_VERSION="2.79"
+    - BLENDER_VERSION_SUFFIX=""
+    - BLENDER_ARCHIVE="blender-${BLENDER_VERSION}${BLENDER_VERSION_SUFFIX}-linux-glibc219-x86_64"
+    - mkdir blender_build && cd blender_build
+    - wget http://ftp.nluug.nl/pub/graphics/blender/release/Blender${BLENDER_VERSION}/${BLENDER_ARCHIVE}.tar.bz2
+    - tar jxf ${BLENDER_ARCHIVE}.tar.bz2
+    - mv ${BLENDER_ARCHIVE} blender
+    - rm ${BLENDER_ARCHIVE}.tar.bz2
+    - cd ..
+    - pip install -r tests/requirements.txt
+
+script:
+    - PATH="blender_build/blender:${PATH}"
+    - blender_build/blender/blender --version
+    - sh tests/run.sh
+
+after_success:
+
+notifications:
+    email:
+        on_success: change
+        on_failure: always

@@ -22,10 +22,17 @@ LOGGER = logging.getLogger('tests_runtime')
 class BlenderTest(unittest.TestCase):
     FFMPEG_EXECUTABLE = None
 
-    @classmethod
-    def setUpClass(cls):
+    def setUp(self):
         import bpy
-        cls.bpy = bpy
+        bpy.ops.wm.read_factory_settings()
+        self.assertEqual(bpy.ops.wm.addon_enable(module='parallel_render'), {'FINISHED'})
+        self.assertEqual(bpy.ops.script.reload(), {'FINISHED'})
+        # Now that we have coverage enabled reload modules
+        # to go through load/unload functions
+        LOGGER.info('bpy.utls.script_paths: %s', bpy.utils.script_paths())
+        LOGGER.info('cwd: %s', os.getcwd())
+
+        self.bpy = bpy
 
 class MessageChannelTest(BlenderTest):
     def test_unexpected_end(self):
@@ -234,7 +241,7 @@ class MockedDrawTest(BlenderTest):
 
 class ParallelRenderTest(BlenderTest):
     def setUp(self):
-        self.bpy.ops.wm.read_homefile()
+        super(ParallelRenderTest, self).setUp()
 
         self.bpy.ops.scene.new(type='NEW')
         self.scn = self.bpy.context.scene
@@ -680,18 +687,9 @@ def run_tests(args):
     LOGGER.info("Appending extra PYTHONPATH %s", extra_pythonpath)
     start_coverage()
 
-    # Now that we have coverage enabled reload modules
-    # to go through load/unload functions
-    import bpy
-    bpy.ops.wm.addon_enable(module='parallel_render')
-    bpy.ops.script.reload() 
-    LOGGER.info('bpy.utls.script_paths: %s', bpy.utils.script_paths())
-    LOGGER.info('cwd: %s', os.getcwd())
-
     BlenderTest.FFMPEG_EXECUTABLE = ffmpeg_path
     unittest.main(
         argv=['<blender executable>'] + args[3:],
-        exit=False
     )
 
 def make_tests_coveragerc(base_file, test_outdir):

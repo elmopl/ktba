@@ -558,7 +558,9 @@ class ParallelRender(types.Operator):
 
         LOGGER.debug('Checkpoint %s %s %s', self.state, props.concatenate, _can_concatenate(scn))
         if self.state == ParallelRenderState.RUNNING and props.concatenate and _can_concatenate(scn):
-            fd, concatenate_files_name = tempfile.mkstemp()
+            fd, concatenate_files_name = tempfile.mkstemp(
+                dir=bpy.path.abspath("//"),
+            )
             os.close(fd)
             LOGGER.info('Going to concatenate concatenate (list file: %s)', concatenate_files_name)
 
