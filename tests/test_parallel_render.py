@@ -34,6 +34,14 @@ class BlenderTest(unittest.TestCase):
 
         self.bpy = bpy
 
+        import parallel_render
+        parallel_render.subprocess_stdout = open(os.devnull, 'w')
+
+    def tearDown(self):
+        import parallel_render
+        parallel_render.subprocess_stdout.close()
+        parallel_render.subprocess_stdout = sys.stdout
+
 class MessageChannelTest(BlenderTest):
     def test_unexpected_end(self):
         import parallel_render
@@ -53,6 +61,27 @@ class TemporaryProjectTest(BlenderTest):
         exists.return_value = False
         with self.assertRaises(Exception):
             with parallel_render.TemporaryProjectCopy() as test: pass
+
+class TestingFrameworkTest(unittest.TestCase):
+    @mock.patch.object(logging, 'basicConfig')
+    def test_subprocess_main(self, basicConfig):
+        import parallel_render
+        import coverage
+        environ = {
+            'COVERAGE_PROCESS_START': 'something',
+            'PYTHONPATH': 'path',
+        }
+        sys = mock.MagicMock()
+        sys.path = []
+        sys.argv = ['--', 'render']
+        with mock.patch.object(os, 'environ', environ):
+            with mock.patch.object(coverage, 'process_startup') as process_startup:
+                with mock.patch.object(parallel_render, 'render') as render:
+                    with mock.patch.object(parallel_render, 'sys', sys):
+                        parallel_render.main()
+                        self.assertTrue(render.called)
+                        self.assertTrue(basicConfig.called)
+                        self.assertTrue(process_startup.called)
 
 class RangesTest(BlenderTest):
     def test_parts(self):
@@ -196,6 +225,57 @@ class RangesTest(BlenderTest):
 
 
 class MockedDrawTest(BlenderTest):
+    def test_parallel_render_invoke(self):
+        import parallel_render
+        context = mock.MagicMock()
+        event = mock.MagicMock()
+        operator = mock.MagicMock()
+        self.assertEqual(
+            parallel_render.ParallelRender.invoke(operator, context, event),
+            context.window_manager.invoke_props_dialog()
+        )
+
+    def test_parallel_render_modal_not_started(self):
+        import parallel_render
+        context = mock.MagicMock()
+        event = mock.MagicMock()
+
+        operator = mock.MagicMock()
+        operator.summary_mutex = None
+        self.assertEqual(
+            {'PASS_THROUGH'},
+            parallel_render.ParallelRender.modal(operator, context, event)
+        )
+
+    def test_parallel_render_modal_running(self):
+        import parallel_render
+        context = mock.MagicMock()
+        event = mock.MagicMock()
+
+        for event_type in ('ESC', 'TIMER', 'SOMETHING_ELSE'):
+            with self.subTest(event_type=event_type):
+                event.type = event_type
+                operator = mock.MagicMock()
+                self.assertEqual(
+                    {'PASS_THROUGH'},
+                    parallel_render.ParallelRender.modal(operator, context, event)
+                )
+
+    def test_parallel_render_modal_finished(self):
+        import parallel_render
+        context = mock.MagicMock()
+        event = mock.MagicMock()
+        event.type = 'TIMER'
+
+        operator = mock.MagicMock()
+        operator.thread.is_alive.side_effect = [False]
+
+        self.assertEqual(
+            {'FINISHED'},
+            parallel_render.ParallelRender.modal(operator, context, event)
+        )
+
+
     def test_parallel_render_panel_draw(self):
         import parallel_render
         panel = mock.MagicMock()
@@ -574,7 +654,7 @@ class ParallelRenderTest(BlenderTest):
                 ['test0001-0030.avi']
             )
 
-    def test_with_child_failure(self):
+    def _setup_common_video(self):
         self._setup_video(
             user_prefs={
                 'ffmpeg_executable': self.FFMPEG_EXECUTABLE,
@@ -601,6 +681,9 @@ class ParallelRenderTest(BlenderTest):
 
         self._create_red_blue_green_sequence()
 
+
+    def test_with_popen_failure(self):
+        self._setup_common_video()
         with mock.patch('subprocess.Popen') as Popen:
             Popen.side_effect = Exception('TEST')
             self._render_video(expected_state='failed')
@@ -610,16 +693,27 @@ class ParallelRenderTest(BlenderTest):
                 []
             )
 
-        #with mock.patch('parallel_render.MessageChannel') as MessageChannel:
-        #    MessageChannel.return_value = Exception('TEST')
-        #    self._render_video(expected_state='failed')
-        #    self.assertTrue(MessageChannel.called)
+    def test_with_ffmpeg_concat_failure(self):
+        self._setup_common_video()
+        with mock.patch('subprocess.call') as call:
+            call.side_effect = [-1]
+            self._render_video(expected_state='failed')
+            self.assertEqual(call.call_args[0][0][0], self.FFMPEG_EXECUTABLE)
+            self.assertEqual(call.call_count, 1) # should only be called for running ffmpeg
+            # Expect all prats, but not concatenated bit
+            self.assertEqual(
+                sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
+                [
+                    'test0001-0009.avi',
+                    'test0001-0030.mp3',
+                    'test0010-0018.avi',
+                    'test0019-0027.avi',
+                    'test0028-0030.avi',
+                ]
+            )
 
-        #    # Expect nothing, as we can't Popen
-        #    self.assertEqual(
-        #        sorted(fname for fname in os.listdir('output/') if fname[0] != '.'),
-        #        []
-        #    )
+    def test_with_custom_failures(self):
+        self._setup_common_video()
 
         base_dir = os.path.realpath('output')
 
@@ -670,19 +764,25 @@ class ParallelRenderTest(BlenderTest):
                             ['test0001-0009.avi']
                         )
 
-def run_tests(args):
-    extra_pythonpath = args[1]
-    ffmpeg_path = args[2]
-    sys.path.append(extra_pythonpath)
-    LOGGER.info("Appending extra PYTHONPATH %s", extra_pythonpath)
-
-    import coverage
-    coverage.process_startup()
-
-    BlenderTest.FFMPEG_EXECUTABLE = ffmpeg_path
+def _run_tests(args):
+    BlenderTest.FFMPEG_EXECUTABLE = args[2]
     unittest.main(
         argv=['<blender executable>'] + args[3:],
     )
+
+def run_tests(args):
+    extra_pythonpath = args[1]
+    sys.path.append(extra_pythonpath)
+    LOGGER.info("Appending extra PYTHONPATH %s", extra_pythonpath)
+    import coverage
+    coverage.process_startup()
+
+    # I split this into separate function to increase coverage
+    # ever so slightly.
+    # I am not clear why, but it seems that coverage misses out on lines
+    # within the same function as coverage.process_startup() got called.
+    # Caling into another function seems to help it.
+    _run_tests(args)
 
 def launch_tests_under_blender(args):
     import coverage

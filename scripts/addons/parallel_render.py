@@ -183,7 +183,14 @@ class WorkerProcess(object):
         sck.connect(tuple(config['controller']))
         return MessageChannel(sck), config['args']
 
-    def __init__(self, worker_id, args, project_file):
+    def __init__(
+        self,
+        worker_id,
+        args,
+        project_file,
+        subprocess_stdout,
+        subprocess_stderr
+    ):
         self._args = args
         self._p = None
         self._incoming = None
@@ -192,6 +199,8 @@ class WorkerProcess(object):
         self._logger = LOGGER.getChild('worker[{}]'.format(worker_id))
         self._connection = None
         self.return_code = None
+        self.subprocess_stdout = subprocess_stdout
+        self.subprocess_stderr = subprocess_stderr
 
     def _create_socket(self):
         self._sck = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -218,6 +227,8 @@ class WorkerProcess(object):
         self._p = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
+            stdout=self.subprocess_stdout,
+            stderr=self.subprocess_stderr,
         )
 
         config = {
@@ -432,6 +443,8 @@ class ParallelRender(types.Operator):
     still_running = False
     thread = None 
     state = None
+    subprocess_stdout = sys.stdout
+    subprocess_stderr = sys.stderr
 
     def draw(self, context):
         layout = self.layout
@@ -494,7 +507,13 @@ class ParallelRender(types.Operator):
             if self.state == ParallelRenderState.RUNNING:
                 try:
                     worker_id = '{}-{}'.format(rng[0], rng[1])
-                    worker = WorkerProcess(worker_id, cmd, project_file=project_file)
+                    worker = WorkerProcess(
+                        worker_id,
+                        cmd,
+                        project_file=project_file,
+                        subprocess_stdout=self.subprocess_stdout,
+                        subprocess_stderr=self.subprocess_stderr,
+                    )
                     msg = None
                     with worker as channel:
                         msgs = iter(channel.recv, None)
@@ -592,7 +611,11 @@ class ParallelRender(types.Operator):
             cmd = base_cmd + sound + overwrite
 
             LOGGER.info('Running: %s', cmd)
-            res = subprocess.call(cmd)
+            res = subprocess.call(
+                cmd,
+                stdout=self.subprocess_stdout,
+                stderr=self.subprocess_stderr,
+            )
             LOGGER.info('Finished running [rc: %s]: %s',  res, cmd)
             if res == 0:
                 self.state = self.state.RUNNING
