@@ -301,7 +301,7 @@ class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
 
     ffmpeg_executable: props.StringProperty(
-        name="Path to ffmpeg executable",
+        name="Full path to ffmpeg executable",
         default="",
         update=lambda self, context: self.update(context),
         subtype='FILE_PATH',
@@ -325,7 +325,10 @@ class ParallelRenderPreferences(types.AddonPreferences):
         layout = self.layout
         layout.prop(self, "ffmpeg_executable")
         icon = 'INFO' if self.ffmpeg_valid else 'ERROR'
-        layout.label(text=self.ffmpeg_status, icon=icon)
+        if self.ffmpeg_status == "":
+            layout.label(text="FFmpeg executable is missing.", icon=icon)
+        else:
+            layout.label(text=self.ffmpeg_status, icon=icon)
 
 
 def _need_temporary_file(data):
