@@ -2,7 +2,7 @@
 Small addon for blender to help with rendering in VSE.
 It automates rendering with multiple instances of blender.
 
-It should come up as "Parallel Render" in addons list.
+It should come up as "VSE Parallel Render" in addons list.
 
 Copyright (c) 2017 Krzysztof Trzcinski
 """
@@ -792,27 +792,11 @@ def main():
         render()
 
 
-#classes = (
-#    #ParallelRenderPanel,
-#    MessageChannel,
-#    CurrentProjectFile,
-#    TemporaryProjectCopy,
-#    WorkerProcess,
-#    #ParallelRenderPreferences,
-#    #ParallelRenderPropertyGroup,
-#    ParallelRenderState,
-#    #ParallelRender,
-#    #parallel_render_menu_draw,
-#)
-#register, unregister = bpy.utils.register_classes_factory(classes)
-
-
 def register():
     bpy.utils.register_class(ParallelRenderPropertyGroup)
     bpy.utils.register_class(ParallelRenderPreferences)
     bpy.utils.register_class(ParallelRender)
     bpy.utils.register_class(ParallelRenderPanel)
-    #bpy.utils.register_class(ParallelRenderState)
     bpy.types.Scene.parallel_render_panel = bpy.props.PointerProperty(type=ParallelRenderPropertyGroup)
     # TODO: I am not quite sure how to put it after actual "Render Animation"
     bpy.types.TOPBAR_MT_render.prepend(parallel_render_menu_draw)
@@ -825,7 +809,6 @@ def unregister():
     bpy.utils.unregister_class(ParallelRenderPreferences)
     bpy.utils.unregister_class(ParallelRender)
     bpy.utils.unregister_class(ParallelRenderPanel)
-    #bpy.utils.unregister_class(ParallelRenderState)
 
 if __name__ == "__main__":
     main()
