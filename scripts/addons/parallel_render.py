@@ -38,8 +38,8 @@ bl_info = {
     "author": "Krzysztof Trzciński",
     "version": (1, 0),
     "blender": (2, 80, 0),
-    "location": "Properties > Parallel Render Panel",
-    "description": "Renders multithreaded for the sequencer",
+    "location": "Properties > Parallel Render Panel or Render menu",
+    "description": "Render the output from the Sequencer multithreaded",
     "warning": "",
     "wiki_url": "https://github.com/elmopl/ktba/wiki/Addons?fbclid=IwAR1SVO4qnBM2UfDyLhyCWqYNuslv-FSNCb3dODpWDIUPLIFP4Fkb0TuPDec#parallel-render",
     "tracker_url": "",
@@ -51,7 +51,7 @@ def _can_concatenate(scene):
 
 
 class ParallelRenderPanel(bpy.types.Panel):
-    """Creates a Panel in the Object properties window"""
+    """Render the Output from the Sequencer Multithreaded"""
     bl_label = "Parallel Render"
     bl_idname = "OBJECT_PT_parallel_render"
     bl_space_type = 'PROPERTIES'
@@ -464,7 +464,7 @@ RANGE_CALCULATORS = {
 
 
 class ParallelRender(types.Operator):
-    """Object Cursor Array"""
+    """Render the Output from the Sequencer Multithreaded"""
     bl_idname = "render.parallel_render"
     bl_label = "Parallel Render"
     bl_options = {'REGISTER'}
