@@ -2,7 +2,7 @@
 Small addon for blender to help with rendering in VSE.
 It automates rendering with multiple instances of blender.
 
-It should come up as "VSE Parallel Render" in addons list.
+It should come up as "Parallel Render" in addons list.
 
 Copyright (c) 2017 Krzysztof Trzcinski
 """
@@ -373,43 +373,43 @@ class ParallelRenderPropertyGroup(types.PropertyGroup):
     )
 
     max_parallel: props.IntProperty(
-        name = "Blender Instances",
-        min = 1,
-        default = cpu_count() - 1,
-        max = 10000
+        name="Blender Instances",
+        min=1,
+        default=cpu_count() - 1,
+        max=10000
     )
 
     overwrite: props.BoolProperty(
-        name = "Overwrite Existing Files",
-        default = True,
+        name="Overwrite Existing Files",
+        default=True,
     )
 
     mixdown: props.BoolProperty(
-        name = "Mixdown Sound",
-        default = True,
+        name="Mixdown Sound",
+        default=True,
     )
 
     concatenate: props.BoolProperty(
-        name = "Concatenate Output Files",
-        update = lambda self, context: self.update(context),
+        name="Concatenate Output Files",
+        update=lambda self, context: self.update(context),
     )
 
     clean_up_parts: props.BoolProperty(
-        name = "Clean Up Partial Files",
+        name="Clean Up Partial Files",
     )
 
     fixed: props.IntProperty(
-        name = "Number of Frames per Batch",
-        min = 1,
-        default = 300,
-        max = 10000
+        name="Number of Frames per Batch",
+        min=1,
+        default=300,
+        max=10000
     )
 
     parts: props.IntProperty(
-        name = "Number of Parts",
-        min = 1,
-        default = cpu_count() * 2,
-        max = 10000
+        name="Number of Parts",
+        min=1,
+        default=cpu_count() * 2,
+        max=10000
     )
 
 
