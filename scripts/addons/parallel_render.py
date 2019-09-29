@@ -79,18 +79,19 @@ class ParallelRenderPanel(bpy.types.Panel):
         layout.prop(props, "overwrite")
         layout.prop(props, "mixdown")
 
-        sub = layout.row()
-        sub.prop(props, "concatenate")
+        col = layout.column()
+        col.prop(props, "concatenate")
         if not _can_concatenate(context.scene):
-            sub.enabled = False
-            sub.label(text='Concatenation only available for movie file format', icon='ERROR')
+            col.enabled = False
+            col.label(text='Concatenation only available for video file format', icon='ERROR')
         elif addon_props.ffmpeg_valid:
-            sub = layout.row()
-            sub.prop(props, "clean_up_parts")
-            sub.enabled = props.concatenate
+            col = layout.column()
+            col.prop(props, "clean_up_parts")
+            col.enabled = props.concatenate
         else:
-            sub.enabled = False
-            sub.label(text='Check add-on settings', icon='ERROR')
+            col.enabled = False
+            col.use_property_split = False
+            col.label(text='Check add-on preferences', icon='ERROR')
 
 
 class MessageChannel(object):
@@ -301,7 +302,7 @@ class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
 
     ffmpeg_executable: props.StringProperty(
-        name="Full path to ffmpeg executable",
+        name="Path to ffmpeg executable",
         default="",
         update=lambda self, context: self.update(context),
         subtype='FILE_PATH',
@@ -315,6 +316,7 @@ class ParallelRenderPreferences(types.AddonPreferences):
         if error is None:
             self.ffmpeg_valid = True
             info = subprocess.check_output((self.ffmpeg_executable, '-version')).decode('utf-8')
+            info = info.split('\r', 1)[0]
             self.ffmpeg_status = 'Version: {}'.format(info)
         else:
             self.ffmpeg_valid = False
@@ -325,8 +327,8 @@ class ParallelRenderPreferences(types.AddonPreferences):
         layout = self.layout
         layout.prop(self, "ffmpeg_executable")
         icon = 'INFO' if self.ffmpeg_valid else 'ERROR'
-        if self.ffmpeg_status == "":
-            layout.label(text="FFmpeg executable is missing.", icon=icon)
+        if icon == 'ERROR':
+            layout.label(text="The path to FFmpeg executable is invalid.", icon=icon)
         else:
             layout.label(text=self.ffmpeg_status, icon=icon)
 
@@ -408,7 +410,7 @@ class ParallelRenderPropertyGroup(types.PropertyGroup):
     parts: props.IntProperty(
         name="Number of Parts",
         min=1,
-        default=cpu_count() * 2,
+        default=(cpu_count()-1) * 2,
         max=10000
     )
 
