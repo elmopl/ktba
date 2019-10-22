@@ -41,14 +41,13 @@ bl_info = {
     "location": "Properties > Parallel Render Panel or Render menu",
     "description": "Render the output from the Sequencer multithreaded",
     "warning": "",
-    "wiki_url": "https://github.com/elmopl/ktba/wiki/Addons?fbclid=IwAR1SVO4qnBM2UfDyLhyCWqYNuslv-FSNCb3dODpWDIUPLIFP4Fkb0TuPDec#parallel-render",
+    "wiki_url": "https://github.com/elmopl/ktba/wiki/Addons#parallel-render",
     "tracker_url": "",
-    "category": "Sequencer"}
-
+    "category": "Sequencer",
+}
 
 def _can_concatenate(scene):
     return scene.render.is_movie_format
-
 
 class ParallelRenderPanel(bpy.types.Panel):
     """Render the Output from the Sequencer Multithreaded"""
@@ -796,12 +795,17 @@ def main():
     if action == 'render':
         render()
 
+CLASSES = (
+    ParallelRenderPropertyGroup,
+    ParallelRenderPreferences,
+    ParallelRender,
+    ParallelRenderPanel,
+)
 
 def register():
-    bpy.utils.register_class(ParallelRenderPropertyGroup)
-    bpy.utils.register_class(ParallelRenderPreferences)
-    bpy.utils.register_class(ParallelRender)
-    bpy.utils.register_class(ParallelRenderPanel)
+    for cls in CLASSES:
+        bpy.utils.register_class(cls)
+
     bpy.types.Scene.parallel_render_panel = bpy.props.PointerProperty(type=ParallelRenderPropertyGroup)
     # TODO: I am not quite sure how to put it after actual "Render Animation"
     bpy.types.TOPBAR_MT_render.prepend(parallel_render_menu_draw)
@@ -810,10 +814,8 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_render.remove(parallel_render_menu_draw)
     del bpy.types.Scene.parallel_render_panel
-    bpy.utils.unregister_class(ParallelRenderPropertyGroup)
-    bpy.utils.unregister_class(ParallelRenderPreferences)
-    bpy.utils.unregister_class(ParallelRender)
-    bpy.utils.unregister_class(ParallelRenderPanel)
+    for cls in reversed(CLASSES):
+        bpy.utils.unregister_class(cls)
 
 if __name__ == "__main__":
     main()
