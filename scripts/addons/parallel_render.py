@@ -2,7 +2,7 @@
 Small addon for blender to help with rendering in VSE.
 It automates rendering with multiple instances of blender.
 
-It should come up as "VSE Parallel Render" in addons list.
+It should come up as "Parallel Render" in addons list.
 
 Copyright (c) 2017 Krzysztof Trzcinski
 """
@@ -32,52 +32,66 @@ import time
 
 LOGGER = logging.getLogger(__name__)
 
+
 bl_info = {
-    "name": "VSE parallel render",
-    "category": "VSE"
+    "name": "Parallel Render",
+    "author": "Krzysztof Trzciński",
+    "version": (1, 0),
+    "blender": (2, 80, 0),
+    "location": "Properties > Parallel Render Panel or Render menu",
+    "description": "Render the output from the Sequencer multithreaded",
+    "warning": "",
+    "wiki_url": "https://github.com/elmopl/ktba/wiki/Addons#parallel-render",
+    "tracker_url": "",
+    "category": "Sequencer",
 }
 
 def _can_concatenate(scene):
     return scene.render.is_movie_format
 
 class ParallelRenderPanel(bpy.types.Panel):
-    """Creates a Panel in the Object properties window"""
+    """Render the Output from the Sequencer Multithreaded"""
     bl_label = "Parallel Render"
     bl_idname = "OBJECT_PT_parallel_render"
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
     bl_context = "render"
+    bl_parent_id = "RENDER_PT_output"
 
     def draw(self, context):
         layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
 
         layout.operator('render.parallel_render', icon='RENDER_ANIMATION')
 
-        addon_props = context.user_preferences.addons[__name__].preferences
+        addon_props = context.preferences.addons[__name__].preferences
         props = context.scene.parallel_render_panel
 
         layout.prop(props, "max_parallel")
 
-        layout.prop(props, "overwrite")
         layout.prop(props, "batch_type", expand=True)
         sub_prop = str(props.batch_type)
         if hasattr(props, sub_prop):
             layout.prop(props, sub_prop)
 
+        layout.prop(props, "overwrite")
         layout.prop(props, "mixdown")
 
-        sub = layout.row()
-        sub.prop(props, "concatenate")
+        col = layout.column()
+        col.prop(props, "concatenate")
         if not _can_concatenate(context.scene):
-            sub.enabled = False
-            sub.label('Concatenation only available for movie file format', icon='ERROR')
+            col.enabled = False
+            col.label(text='Concatenation only available for video file format', icon='ERROR')
         elif addon_props.ffmpeg_valid:
-            sub = layout.row()
-            sub.prop(props, "clean_up_parts")
-            sub.enabled = props.concatenate
+            col = layout.column()
+            col.prop(props, "clean_up_parts")
+            col.enabled = props.concatenate
         else:
-            sub.enabled = False
-            sub.label('Check add-on settings', icon='ERROR')
+            col.enabled = False
+            col.use_property_split = False
+            col.label(text='Check add-on preferences', icon='ERROR')
+
 
 class MessageChannel(object):
     MSG_SIZE_FMT = '!i'
@@ -115,6 +129,7 @@ class MessageChannel(object):
             return None
         return json.loads(self._recv(msg_size).decode('utf8'))
 
+
 class CurrentProjectFile(object):
     def __init__(self):
         self.path = None
@@ -122,9 +137,10 @@ class CurrentProjectFile(object):
     def __enter__(self):
         self.path = bpy.data.filepath
         return self
-    
+
     def __exit__(self, exc_type, exc_value, tb):
         self.path = None
+
 
 class TemporaryProjectCopy(object):
     def __init__(self):
@@ -171,7 +187,8 @@ class TemporaryProjectCopy(object):
                 os.unlink(self.path + str(n))
                 n += 1
         except OSError:
-            pass 
+            pass
+
 
 class WorkerProcess(object):
     CONNECT_TIMEOUT = 30
@@ -259,12 +276,14 @@ class WorkerProcess(object):
 
         self._detroy_socket()
 
+
 def _add_multiline_label(layout, lines, icon='NONE'):
     for line in lines:
         row = layout.row()
         row.alignment = 'CENTER'
-        row.label(line, icon=icon)
-        icon='NONE'
+        row.label(text=line, icon=icon)
+        icon = 'NONE'
+
 
 def _is_valid_ffmpeg_executable(path):
     res = None
@@ -277,24 +296,26 @@ def _is_valid_ffmpeg_executable(path):
     LOGGER.info("_is_valid_ffmpeg_executable(%s): %s", path, res)
     return res
 
+
 class ParallelRenderPreferences(types.AddonPreferences):
     bl_idname = __name__
 
-    ffmpeg_executable = props.StringProperty(
+    ffmpeg_executable: props.StringProperty(
         name="Path to ffmpeg executable",
         default="",
         update=lambda self, context: self.update(context),
         subtype='FILE_PATH',
     )
 
-    ffmpeg_status = props.StringProperty(default="")
-    ffmpeg_valid = props.BoolProperty(default=False)
+    ffmpeg_status: props.StringProperty(default="")
+    ffmpeg_valid: props.BoolProperty(default=False)
 
     def update(self, context):
         error = _is_valid_ffmpeg_executable(self.ffmpeg_executable)
         if error is None:
             self.ffmpeg_valid = True
             info = subprocess.check_output((self.ffmpeg_executable, '-version')).decode('utf-8')
+            info = info.split('\r', 1)[0]
             self.ffmpeg_status = 'Version: {}'.format(info)
         else:
             self.ffmpeg_valid = False
@@ -305,19 +326,25 @@ class ParallelRenderPreferences(types.AddonPreferences):
         layout = self.layout
         layout.prop(self, "ffmpeg_executable")
         icon = 'INFO' if self.ffmpeg_valid else 'ERROR'
-        layout.label(self.ffmpeg_status, icon=icon)
+        if icon == 'ERROR':
+            layout.label(text="The path to FFmpeg executable is invalid.", icon=icon)
+        else:
+            layout.label(text=self.ffmpeg_status, icon=icon)
+
 
 def _need_temporary_file(data):
     return data.is_dirty
+
 
 def parallel_render_menu_draw(self, context):
     layout = self.layout
     layout.operator('render.parallel_render', icon='RENDER_ANIMATION')
     layout.separator()
 
+
 class ParallelRenderPropertyGroup(types.PropertyGroup):
     def update(self, context):
-        addon_props = context.user_preferences.addons[__name__].preferences
+        addon_props = context.preferences.addons[__name__].preferences
 
         if not addon_props.ffmpeg_valid and self.concatenate:
             LOGGER.info("ParallelRenderPropertyGroup forcing concatenate to false")
@@ -327,64 +354,65 @@ class ParallelRenderPropertyGroup(types.PropertyGroup):
         if not self.concatenate:
             self.clean_up_parts = False
 
-    last_run_result = props.EnumProperty(
-        items = [
+    last_run_result: props.EnumProperty(
+        items=[
             # (identifier, name, description, icon, number)
             ('done', '', ''),
             ('pending', '', ''),
             ('failed', '', ''),
         ],
-        name = "Render Batch Size"
+        name="Render Batch Size"
     )
 
-    batch_type = props.EnumProperty(
-        items = [
+    batch_type: props.EnumProperty(
+        items=[
             # (identifier, name, description, icon, number)
-            ('parts', 'No. parts', 'Render in given number of batches (automatically splits it)'),
-            ('fixed', 'Fixed', 'Render in fixed size batches'), 
+            ('parts', 'Parts', 'Render in given number of batches (automatically splits it)'),
+            ('fixed', 'Fixed', 'Render in fixed size batches'),
         ],
-        name = "Render Batch Size"
+        name="Render Batch Size"
     )
 
-    max_parallel = props.IntProperty(
-        name = "Number of background worker Blender instances",
-        min = 1,
-        default = cpu_count() - 1,
-        max = 10000
+    max_parallel: props.IntProperty(
+        name="Blender Instances",
+        min=1,
+        default=cpu_count() - 1,
+        max=10000
     )
 
-    overwrite = props.BoolProperty(
-        name = "Overwrite existing files",
-        default = True,
+    overwrite: props.BoolProperty(
+        name="Overwrite Existing Files",
+        default=True,
     )
 
-    mixdown = props.BoolProperty(
-        name = "Mixdown sound",
-        default = True,
+    mixdown: props.BoolProperty(
+        name="Mixdown Sound",
+        default=True,
     )
 
-    concatenate = props.BoolProperty(
-        name = "Concatenate output files into one",
-        update = lambda self, context: self.update(context),
+    concatenate: props.BoolProperty(
+        name="Concatenate Output Files",
+        update=lambda self, context: self.update(context),
     )
 
-    clean_up_parts = props.BoolProperty(
-        name = "Clean up partial files (after successful concatenation)",
+    clean_up_parts: props.BoolProperty(
+        name="Clean Up Partial Files",
     )
 
-    fixed = props.IntProperty(
-        name = "Number of frames per batch",
-        min = 1,
-        default = 300,
-        max = 10000
+    fixed: props.IntProperty(
+        name="Number of Frames per Batch",
+        min=1,
+        default=300,
+        max=10000
     )
 
-    parts = props.IntProperty(
-        name = "Number of batches",
-        min = 1,
-        default = cpu_count() * 2,
-        max = 10000
+    parts: props.IntProperty(
+        name="Number of Parts",
+        min=1,
+        default=(cpu_count()-1) * 2,
+        max=10000
     )
+
 
 class ParallelRenderState(Enum):
     CLEANING = 1
@@ -404,6 +432,7 @@ class ParallelRenderState(Enum):
             self.CANCELLING: ('WARNING', 'Cancelling'),
         }[self]
 
+
 def get_ranges_parts(scn):
     offset = scn.frame_start
     current = 0
@@ -420,6 +449,7 @@ def get_ranges_parts(scn):
         yield (offset + current, offset + end - 1)
         current = end
 
+
 def get_ranges_fixed(scn):
     start = scn.frame_start
     end = scn.frame_end
@@ -435,13 +465,13 @@ RANGE_CALCULATORS = {
 
 
 class ParallelRender(types.Operator):
-    """Object Cursor Array"""
+    """Render the Output from the Sequencer Multithreaded"""
     bl_idname = "render.parallel_render"
     bl_label = "Parallel Render"
     bl_options = {'REGISTER'}
 
     still_running = False
-    thread = None 
+    thread = None
     state = None
     subprocess_stdout = sys.stdout
     subprocess_stderr = sys.stderr
@@ -458,7 +488,7 @@ class ParallelRender(types.Operator):
                 icon='ERROR',
             )
 
-        layout.row().label('Will render frames from {} to {}'.format(context.scene.frame_start, context.scene.frame_end))
+        layout.row().label(text='Will render frames from {} to {}'.format(context.scene.frame_start, context.scene.frame_end))
 
     def __init__(self):
         super(ParallelRender, self).__init__()
@@ -663,15 +693,15 @@ class ParallelRender(types.Operator):
                 self.summary['frames'],
                 100.0 * self.summary['frames_done'] / self.summary['frames']
             ))
-        
+
     def execute(self, context):
         scn = context.scene
         wm = context.window_manager
-        self.timer = wm.event_timer_add(0.5, context.window)
+        self.timer = wm.event_timer_add(0.5, window=context.window)
         wm.modal_handler_add(self)
         wm.progress_begin(0., 100.)
 
-        addon_props = context.user_preferences.addons[__name__].preferences
+        addon_props = context.preferences.addons[__name__].preferences
 
         self.max_parallel = scn.parallel_render_panel.max_parallel
         self.ffmpeg_executable = addon_props.ffmpeg_executable
@@ -692,7 +722,7 @@ class ParallelRender(types.Operator):
             self._report_progress()
 
         if event.type == 'TIMER':
-            still_running = self.thread.is_alive() 
+            still_running = self.thread.is_alive()
             with self.summary_mutex:
                 percent = 100.0 * self.summary['batches_done'] / self.summary['batches']
 
@@ -712,16 +742,6 @@ class ParallelRender(types.Operator):
         wm = context.window_manager
         return wm.invoke_props_dialog(self)
 
-def register():
-    bpy.utils.register_module(__name__)
-    bpy.types.Scene.parallel_render_panel = bpy.props.PointerProperty(type=ParallelRenderPropertyGroup)
-    # TODO: I am not quite sure how to put it after actual "Render Animation"
-    bpy.types.INFO_MT_render.prepend(parallel_render_menu_draw)
-
-def unregister():
-    bpy.types.INFO_MT_render.remove(parallel_render_menu_draw)
-    del bpy.types.Scene.parallel_render_panel
-    bpy.utils.unregister_module(__name__)
 
 def render():
     channel, args = WorkerProcess.read_config()
@@ -746,7 +766,7 @@ def render():
             LOGGER.info("Writing file {}".format(outfile))
             if args['--overwrite'] or not os.path.exists(outfile):
                 bpy.app.handlers.render_stats.append(_update_progress)
-                bpy.ops.render.render(animation=True, scene = scn_name)
+                bpy.ops.render.render(animation=True, scene=scn_name)
             else:
                 LOGGER.warning('%s already exists.', outfile)
 
@@ -756,6 +776,7 @@ def render():
         finally:
             channel.send(None)
     sys.exit(0)
+
 
 def main():
     covstart = os.environ.get('COVERAGE_PROCESS_START')
@@ -774,6 +795,27 @@ def main():
     if action == 'render':
         render()
 
+CLASSES = (
+    ParallelRenderPropertyGroup,
+    ParallelRenderPreferences,
+    ParallelRender,
+    ParallelRenderPanel,
+)
+
+def register():
+    for cls in CLASSES:
+        bpy.utils.register_class(cls)
+
+    bpy.types.Scene.parallel_render_panel = bpy.props.PointerProperty(type=ParallelRenderPropertyGroup)
+    # TODO: I am not quite sure how to put it after actual "Render Animation"
+    bpy.types.TOPBAR_MT_render.prepend(parallel_render_menu_draw)
+
+
+def unregister():
+    bpy.types.TOPBAR_MT_render.remove(parallel_render_menu_draw)
+    del bpy.types.Scene.parallel_render_panel
+    for cls in reversed(CLASSES):
+        bpy.utils.unregister_class(cls)
+
 if __name__ == "__main__":
     main()
-

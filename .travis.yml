@@ -17,9 +17,9 @@ before_install:
     - sudo apt-get install -y ffmpeg
 
 install:
-    - BLENDER_VERSION="2.79"
+    - BLENDER_VERSION="2.80"
     - BLENDER_VERSION_SUFFIX=""
-    - BLENDER_ARCHIVE="blender-${BLENDER_VERSION}${BLENDER_VERSION_SUFFIX}-linux-glibc219-x86_64"
+    - BLENDER_ARCHIVE="blender-${BLENDER_VERSION}${BLENDER_VERSION_SUFFIX}-linux-glibc217-x86_64"
     - mkdir blender_build && cd blender_build
     - wget http://ftp.nluug.nl/pub/graphics/blender/release/Blender${BLENDER_VERSION}/${BLENDER_ARCHIVE}.tar.bz2
     - tar jxf ${BLENDER_ARCHIVE}.tar.bz2

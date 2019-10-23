@@ -25,7 +25,7 @@ class BlenderTest(unittest.TestCase):
     def setUp(self):
         import bpy
         bpy.ops.wm.read_factory_settings()
-        self.assertEqual(bpy.ops.wm.addon_enable(module='parallel_render'), {'FINISHED'})
+        self.assertEqual(bpy.ops.preferences.addon_enable(module='parallel_render'), {'FINISHED'})
         self.assertEqual(bpy.ops.script.reload(), {'FINISHED'})
         # Now that we have coverage enabled reload modules
         # to go through load/unload functions
@@ -281,13 +281,14 @@ class MockedDrawTest(BlenderTest):
         panel = mock.MagicMock()
         context = mock.MagicMock()
 
-        addon_props = context.user_preferences.addons['parallel_render'].preferences
+        addon_props = context.preferences.addons['parallel_render'].preferences
 
         for is_dirty in (True, False):
             with mock.patch('bpy.data') as data:
                 data.is_dirty = is_dirty
 
                 context.scene.render.is_movie_format = False
+                panel.ffmpeg_valid = True
                 addon_props.ffmpeg_valid = True
                 parallel_render.ParallelRenderPanel.draw(panel, context)
                 parallel_render.ParallelRender.check(panel, context)
@@ -296,6 +297,7 @@ class MockedDrawTest(BlenderTest):
                 parallel_render.parallel_render_menu_draw(panel, context)
 
                 context.scene.render.is_movie_format = True
+                panel.ffmpeg_valid = True
                 addon_props.ffmpeg_valid = True
                 parallel_render.ParallelRenderPanel.draw(panel, context)
                 parallel_render.ParallelRender.draw(panel, context)
@@ -304,6 +306,7 @@ class MockedDrawTest(BlenderTest):
                 parallel_render.parallel_render_menu_draw(panel, context)
 
                 context.scene.render.is_movie_format = True
+                panel.ffmpeg_valid = False
                 addon_props.ffmpeg_valid = False
                 parallel_render.ParallelRenderPanel.draw(panel, context)
                 parallel_render.ParallelRender.draw(panel, context)
@@ -312,6 +315,7 @@ class MockedDrawTest(BlenderTest):
                 parallel_render.parallel_render_menu_draw(panel, context)
 
                 context.scene.render.is_movie_format = False
+                panel.ffmpeg_valid = False
                 addon_props.ffmpeg_valid = False
                 parallel_render.ParallelRenderPanel.draw(panel, context)
                 parallel_render.ParallelRender.draw(panel, context)
@@ -328,8 +332,20 @@ class ParallelRenderTest(BlenderTest):
         self.scn.sequence_editor_create()
         self.scn.name = "TEST_SCENE"
 
-        editing_screen = self.bpy.data.screens["Video Editing"]
-        editing_screen.scene = self.scn
+        # startup_blend = os.path.join(
+        #     self.bpy.utils.resource_path('LOCAL'),
+        #     'scripts',
+        #     'startup',
+        #     'bl_app_templates_system',
+        #     'Video_Editing',
+        #     'startup.blend',
+        # )
+
+        # self.bpy.ops.workspace.append_activate(idname="Video Editing", filepath=startup_blend)
+
+        # workspace = self.bpy.data.workspaces["Video Editing"]
+        # editing_screen = workspace
+        # editing_screen.scene = self.scn
 
         try:
             shutil.rmtree('output')
@@ -337,8 +353,8 @@ class ParallelRenderTest(BlenderTest):
             pass
         os.makedirs('output')
 
-    def tearDown(self):
-        self.bpy.context.screen.scene = self.scn
+    # def tearDown(self):
+    #     self.bpy.context.screen.scene = self.scn
 
     def _setup_video(self, project_prefs, user_prefs):
         render = self.scn.render
@@ -354,26 +370,18 @@ class ParallelRenderTest(BlenderTest):
 
         # Let us iterate over all properties and set them
         # Those are per user (visible under addon properties)
-        pg = self.bpy.types.ParallelRenderPreferences
-        addon_props = self.bpy.context.user_preferences.addons['parallel_render'].preferences
-        for name in dir(pg):
-            prop = getattr(pg, name)
-            if isinstance(prop, tuple) and len(prop) == 2:
-                setattr(addon_props, name, user_prefs[name])
+        pg = self.bpy.context.preferences.addons['parallel_render'].preferences
+        for name, value in user_prefs.items():
+            setattr(pg, name, value)
 
         # Once we've set up everything let's recalculate
         # things that are not directly set by user.
-        addon_props.update(self.bpy.context)
+        pg.update(self.bpy.context)
 
         # Those are per project (visible under properties tab widget)
-        pg = self.bpy.types.ParallelRenderPropertyGroup
         panel = self.scn.parallel_render_panel
-        for name in dir(pg):
-            prop = getattr(pg, name)
-            # This seems to filter out everything that is not a 
-            # property we want to set.
-            if isinstance(prop, tuple) and len(prop) == 2:
-                setattr(panel, name, project_prefs[name])
+        for name, value in project_prefs.items():
+            setattr(panel, name, value)
 
         # Recalculate derived properties (ones not directly set
         # by user)
@@ -590,7 +598,7 @@ class ParallelRenderTest(BlenderTest):
         self._create_red_blue_green_sequence()
         self._render_video()
 
-        self.assertTrue(self.bpy.context.user_preferences.addons['parallel_render'].preferences.ffmpeg_valid)
+        self.assertTrue(self.bpy.context.preferences.addons['parallel_render'].preferences.ffmpeg_valid)
 
         # Expect just the final render and all parts
         self.assertEqual(
