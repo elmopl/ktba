@@ -41,6 +41,7 @@ DESCRIPTION = {
             },
             'panel_width': {
                 'default': 0.15,
+                'update': lambda l, c: (l['width'] - 2 * (l['panel_offset_side'] + l['frame_width'])) / (c['panels'] or 1) / 2,
                 'base_transform': Matrix.Translation(
                                     z=PV('panel_height') / 2
                                      +PV('sill_height'),

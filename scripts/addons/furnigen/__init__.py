@@ -32,11 +32,18 @@ bl_info = {
     "category": "3D View",
 }
 
+def count_updated(self, context):
+    obj = self.id_data
+    build_geometry(obj)
+
 class FurniGenLength(bpy.types.PropertyGroup):
-    value: bpy.props.FloatProperty(min=0)
+    value: bpy.props.FloatProperty(min=0, unit='LENGTH')
 
 class FurniGenCount(bpy.types.PropertyGroup):
-    value: bpy.props.IntProperty(min=0)
+    value: bpy.props.IntProperty(
+        min=0,
+        update=count_updated,
+    )
 
 class FurniGenProperties(bpy.types.PropertyGroup):
     # name = StringProperty() # this is inherited from bpy.types.PropertyGroup
@@ -60,7 +67,18 @@ def set_parameter_properties(furnigen):
 
 def build_geometry(obj):
     mesh = obj.data
+    mesh.clear_geometry()
+
     info = GEOMETRIES[obj.furnigen.geometry]
+
+    lengths = {name: data.value for name, data in obj.furnigen.lengths.items()}
+    counts = {name: data.value for name, data in obj.furnigen.counts.items()}
+    
+    for name, param in info['parameters']['lengths'].items():
+        update = param.get('update')
+        if update is not None:
+            obj.furnigen.lengths[name].value = update(lengths, counts)
+
     geometries = info['geometries']
     param_name_to_idx = {
         name: pos
@@ -87,7 +105,7 @@ def build_geometry(obj):
             assert isinstance(vertices, (list, tuple)), (geometry['name'], type(vertices))
             vertex_offset += len(vertices)
 
-    obj.data.from_pydata(
+    mesh.from_pydata(
         vertices=((0, 0, 0),) * vertex_offset,
         edges=(),
         faces=all_faces
@@ -105,7 +123,6 @@ def build_geometry(obj):
                         co = co.subst(instance=instance, instance_count=instance_count)
                         vertex.co[co_idx] = 1
                         driver = vertex.driver_add('co', co_idx).driver
-                        print(co, co.parameters)
                         for name in co.parameters:
                             var = driver.variables.new()
                             var.name = name
@@ -116,6 +133,8 @@ def build_geometry(obj):
                             target.data_path = f'furnigen.lengths[{pos}].value'
 
                             driver.expression = str(co)
+
+    assert not mesh.validate(verbose=True)
 
 def _is_furnigen_enabled(context):
     ob = context.active_object
