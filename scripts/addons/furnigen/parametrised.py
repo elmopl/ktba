@@ -30,22 +30,44 @@ class ParametrisedValue(object):
 
         if self.constant and other.constant:
             res = getattr(self.expr, name)(other.expr)
-            parameters = None
+            parameters = set()
         else:
             parameters = self.parameters | other.parameters
             res = f'({self}) {op} ({other})'
+
         return ParametrisedValue(res, parameters)
 
     def __mul__(self, other):
+        if getattr(self, 'expr', self) == 0.0:
+            return self
+        if getattr(other, 'expr', other) == 0.0:
+            return other
+
+        if getattr(self, 'expr', self) == 1.0:
+            return other
+        if getattr(other, 'expr', other) == 1.0:
+            return self
+
         return self._apply_op(other, '*', '__mul__')
 
     def __add__(self, other):
+        if getattr(self, 'expr', self) == 0.0:
+            return other
+        if getattr(other, 'expr', other) == 0.0:
+            return self
+
         return self._apply_op(other, '+', '__add__')
 
     def __sub__(self, other):
+        if getattr(other, 'expr', other) == 0.0:
+            return self
+
         return self._apply_op(other, '-', '__sub__')
 
     def __truediv__(self, other):
+        if getattr(other, 'expr', other) == 1.0:
+            return self
+
         return self._apply_op(other, '/', '__truediv__')
     
     def subst(self, **values):
@@ -82,14 +104,19 @@ class ParametrisedMatrix(object):
         return ParametrisedMatrix(Matrix.Identity(*a, **kw))
 
     def __init__(self, matrix):
-        self.matrix = tuple(
+        self.rows = tuple(
             tuple(map(ParametrisedValue, row))
             for row in matrix
         )
 
+    @property
+    def T(self):
+        return ParametrisedMatrix(tuple(zip(*self.rows)))
+
     def __matmul__(self, other):
-        a = self.matrix
-        b = tuple(zip(*other.matrix))
+        assert len(self.rows[0]) == len(other.rows)
+        a = self.rows
+        b = tuple(zip(*other.rows))
         return ParametrisedMatrix(
             (
                 sum(
@@ -105,11 +132,26 @@ class ParametrisedMatrix(object):
         )
 
     def __repr__(self):
-        return str(tuple(tuple(row) for row in self.matrix))
+        return str(tuple(tuple(row) for row in self.rows))
+
+    def __str__(self):
+        return '[\n' + '\n'.join(
+            '    ' + str(tuple(row))
+            for row in self.rows
+        ) + '\n]'
 
     def calculate(self, parameters):
         return Matrix(tuple(
             Vector(cell.calculate(parameters) for cell in row)
-            for row in self.matrix
+            for row in self.rows
         ))
+
+def rectangle(width, height):
+    return ParametrisedMatrix((
+        (0, 0, 0, 1),
+        (width, 0, 0, 1),
+        (width, 0, height, 1),
+        (0, 0, height, 1)
+    ))
+
 

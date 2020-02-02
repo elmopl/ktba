@@ -85,7 +85,7 @@ def build_geometry(obj):
         for pos, name in enumerate(info['parameters']['lengths'])
     }
 
-    all_faces = []
+    offsets = {}
 
     def get_instances(geom):
         count = 1
@@ -94,16 +94,44 @@ def build_geometry(obj):
             count = obj.furnigen.counts[name].value
         return count
 
+    def resolve_face(current_offset, previous, face):
+        resolved = []
+        for vertex in face:
+            offset = current_offset
+            if isinstance(vertex, tuple):
+                name, vertex = vertex
+                if name == 'previous':
+                    if previous is None:
+                        return None
+                    offset = offsets[previous]
+                else:
+                    offset = offsets[name]
+
+            resolved.append(offset + vertex)
+
+        return resolved
+
+    all_faces = []
     vertex_offset = 0
     for geometry in geometries:
-        for _ in range(get_instances(geometry)):
-            all_faces.extend(
-                tuple(x + vertex_offset for x in face)
-                for face in geometry['faces']
-            )
+        name = geometry['name']
+        previous = None
+        for instance_num in range(get_instances(geometry)):
+            offsets[f'{name}-{instance_num}'] = vertex_offset
+
+            faces = geometry['faces']
+            if callable(faces):
+                faces = faces(obj.furnigen, instance_num)
+
+            faces = filter(bool, map(partial(resolve_face, vertex_offset, previous), faces))
+            faces = tuple(faces)
+            all_faces.extend(faces)
+
             vertices = geometry['vertices']
-            assert isinstance(vertices, (list, tuple)), (geometry['name'], type(vertices))
+            assert isinstance(vertices, (list, tuple)), (name, type(vertices))
             vertex_offset += len(vertices)
+
+            previous = f'{name}-{instance_num}'
 
     mesh.from_pydata(
         vertices=((0, 0, 0),) * vertex_offset,
@@ -116,6 +144,7 @@ def build_geometry(obj):
         instance_count = get_instances(geometry)
         for instance in range(instance_count):
             for pos, vertex in zip(geometry['vertices'], vertices):
+                pos = pos[0:3]
                 for co_idx, co in enumerate(map(ParametrisedValue, pos)):
                     if co.constant:
                         vertex.co[co_idx] = co.expr
