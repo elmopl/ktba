@@ -754,6 +754,8 @@ def render():
 
             outfile = bpy.context.scene.render.frame_path()
 
+            bpy.context.preferences.system.use_sequencer_disk_cache=False
+
             def _update_progress(_ignored):
                 send_stats(bpy.context.scene.frame_current)
 
