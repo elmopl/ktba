@@ -1,6 +1,6 @@
 language: python
 python:
-    - 3.6
+    - 3.8
 
 cache:
     apt: true
@@ -13,17 +13,17 @@ addons:
 
 before_install:
     - sudo apt-get -y update
-    - sudo apt-get install -y ffmpeg
+    - sudo apt-get install -y ffmpeg python3-coverage
 
 install:
-    - BLENDER_VERSION="2.80"
-    - BLENDER_VERSION_SUFFIX=""
-    - BLENDER_ARCHIVE="blender-${BLENDER_VERSION}${BLENDER_VERSION_SUFFIX}-linux-glibc217-x86_64"
+    - BLENDER_VERSION="2.91"
+    - BLENDER_BASE="blender-${BLENDER_VERSION}.0-linux64"
+    - BLENDER_TARBALL="${BLENDER_BASE}.tar.xz"
     - mkdir blender_build && cd blender_build
-    - wget http://ftp.nluug.nl/pub/graphics/blender/release/Blender${BLENDER_VERSION}/${BLENDER_ARCHIVE}.tar.bz2
-    - tar jxf ${BLENDER_ARCHIVE}.tar.bz2
-    - mv ${BLENDER_ARCHIVE} blender
-    - rm ${BLENDER_ARCHIVE}.tar.bz2
+    - wget http://ftp.nluug.nl/pub/graphics/blender/release/Blender${BLENDER_VERSION}/${BLENDER_TARBALL}
+    - tar xf ${BLENDER_TARBALL}
+    - mv ${BLENDER_BASE} blender
+    - rm ${BLENDER_TARBALL}
     - cd ..
     - pip install -r tests/requirements.txt
 
