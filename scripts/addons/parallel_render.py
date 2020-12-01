@@ -32,12 +32,11 @@ import time
 
 LOGGER = logging.getLogger(__name__)
 
-
 bl_info = {
     "name": "Parallel Render",
     "author": "Krzysztof Trzciński",
     "version": (1, 0),
-    "blender": (2, 80, 0),
+    "blender": (2, 91, 0),
     "location": "Properties > Parallel Render Panel or Render menu",
     "description": "Render the output from the Sequencer multithreaded",
     "warning": "",
@@ -779,16 +778,18 @@ def render():
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
+
     covstart = os.environ.get('COVERAGE_PROCESS_START')
     if covstart is not None:
-        sys.path.extend(os.environ['PYTHONPATH'].split(os.path.sep))
+        sys.path.extend(os.environ['PYTHONPATH'].split(':'))
+        logging.info('sys.path: %s', sys.path)
         import coverage
         coverage.process_startup()
 
     # Get everything after '--' as those are arguments
     # to our script
     args = sys.argv[sys.argv.index('--') + 1:]
-    logging.basicConfig(level=logging.INFO)
 
     action = args[0]
 

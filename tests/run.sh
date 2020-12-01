@@ -21,10 +21,10 @@ export TMPDIR=`readlink -f tests_output/tmp`
 coverage_rc_template=`readlink -f tests/coverage.template.rc`
 tests_coverage_rc=`readlink -f tests_output/coverage.rc`
 
-python "${realdir}/prepare_coverage.py" --template "${coverage_rc_template}" --output "${tests_coverage_rc}"
+python3 "${realdir}/prepare_coverage.py" --template "${coverage_rc_template}" --output "${tests_coverage_rc}"
 
 export COVERAGE_PROCESS_START="${tests_coverage_rc}"
-coverage="python -m coverage"
+coverage="python3 -m coverage"
 
 ${coverage} run --append --rcfile="${tests_coverage_rc}" "${realdir}/test_dummy.py"
 ${coverage} run --append --rcfile="${tests_coverage_rc}" "${realdir}/test_parallel_render.py" test "${blender_bin}" "${ffmpeg_bin}"
