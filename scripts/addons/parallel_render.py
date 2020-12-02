@@ -753,6 +753,12 @@ def render():
 
             outfile = bpy.context.scene.render.frame_path()
 
+            if hasattr(bpy.context.preferences.system, 'use_sequencer_disk_cache'):
+                bpy.context.preferences.system.use_sequencer_disk_cache=False
+
+            if hasattr(bpy.context.preferences.system, 'memory_cache_limit'):
+                bpy.context.preferences.system.memory_cache_limit=64
+
             def _update_progress(_ignored):
                 send_stats(bpy.context.scene.frame_current)
 
