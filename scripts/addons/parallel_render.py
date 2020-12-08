@@ -762,16 +762,38 @@ def render():
                     'current_frame':  frame,
                 })
 
-            LOGGER.info("Writing file {}".format(outfile))
-            if args['--overwrite'] or not os.path.exists(outfile):
-                bpy.app.handlers.render_stats.append(_update_progress)
-                bpy.ops.render.render(animation=True, scene=scn_name)
+            if bpy.context.scene.render.is_movie_format:
+                LOGGER.info("Writing file {}".format(outfile))
+                if args['--overwrite'] or not os.path.exists(outfile):
+                    bpy.app.handlers.render_stats.append(_update_progress)
+                    bpy.ops.render.render(animation=True, scene=scn_name)
+                else:
+                    LOGGER.warning('%s already exists.', outfile)
             else:
-                LOGGER.warning('%s already exists.', outfile)
+                outfile=list(map(lambda x: bpy.context.scene.render.frame_path(frame=x) , range(scn.frame_start,scn.frame_end+1)))
+                LOGGER.info("Writing files {}".format(outfile))
+
+                must_render=False
+                if args['--overwrite']:
+                    must_render=True
+                else:
+                    for f in outfile:
+                        if not os.path.exists(f) :
+                            must_render=True
+
+                if must_render:
+                    bpy.app.handlers.render_stats.append(_update_progress)
+                    bpy.ops.render.render(animation=True, scene=scn_name)
+                else:
+                    LOGGER.warning('%s already exists.', outfile)
 
             send_stats(scn.frame_end)
-            LOGGER.info("Done writing {}".format(outfile))
-            assert os.path.exists(outfile)
+            if bpy.context.scene.render.is_movie_format:
+                LOGGER.info("Done writing {}".format(outfile))
+                assert os.path.exists(outfile)
+            else:
+                LOGGER.info("Done writing {}".format(outfile))
+                assert list(map(lambda x: os.path.exists(x) , outfile ))
         finally:
             channel.send(None)
     sys.exit(0)
